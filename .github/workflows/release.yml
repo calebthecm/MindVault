@@ -56,67 +56,89 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           TOKEN="${{ secrets.VERCEL_TOKEN }}"
 
-          echo "Fetching existing APP_VERSION env var ID..."
-          ENV_LIST=$(curl -sf \
+          if [ -z "$TOKEN" ]; then
+            echo "ERROR: VERCEL_TOKEN secret is not set. Add it at:"
+            echo "  GitHub repo → Settings → Secrets → Actions → New secret"
+            exit 1
+          fi
+
+          echo "Fetching existing env vars for project..."
+          ENV_LIST=$(curl -s \
             "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env?teamId=${VERCEL_TEAM_ID}" \
             -H "Authorization: Bearer $TOKEN")
 
+          echo "API response: $ENV_LIST" | head -c 400
+
           ENV_ID=$(echo "$ENV_LIST" | python3 -c "
           import json, sys
-          data = json.load(sys.stdin)
-          for e in data.get('envs', []):
-              if e.get('key') == 'APP_VERSION':
-                  print(e['id'])
-                  break
-          ")
+          try:
+              data = json.load(sys.stdin)
+              for e in data.get('envs', []):
+                  if e.get('key') == 'APP_VERSION':
+                      print(e['id'])
+                      break
+          except Exception as ex:
+              print('PARSE_ERROR:' + str(ex), file=sys.stderr)
+          " 2>&1)
+
+          if echo "$ENV_ID" | grep -q "PARSE_ERROR"; then
+            echo "Failed to parse Vercel API response."
+            exit 1
+          fi
 
           if [ -z "$ENV_ID" ]; then
             echo "APP_VERSION not found — creating it..."
-            curl -sf -X POST \
+            RESULT=$(curl -s -X POST \
               "https://api.vercel.com/v10/projects/${VERCEL_PROJECT_ID}/env?teamId=${VERCEL_TEAM_ID}" \
               -H "Authorization: Bearer $TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"key\":\"APP_VERSION\",\"value\":\"$VERSION\",\"type\":\"plain\",\"target\":[\"production\",\"preview\"]}"
+              -d "{\"key\":\"APP_VERSION\",\"value\":\"$VERSION\",\"type\":\"plain\",\"target\":[\"production\",\"preview\",\"development\"]}")
+            echo "Create result: $RESULT"
           else
-            echo "Updating APP_VERSION ($ENV_ID) to $VERSION..."
-            curl -sf -X PATCH \
+            echo "Updating APP_VERSION ($ENV_ID) → $VERSION..."
+            RESULT=$(curl -s -X PATCH \
               "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env/${ENV_ID}?teamId=${VERCEL_TEAM_ID}" \
               -H "Authorization: Bearer $TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"value\":\"$VERSION\"}"
+              -d "{\"value\":\"$VERSION\"}")
+            echo "Update result: $RESULT"
           fi
 
-          echo "Vercel env updated."
+          echo "Vercel env step complete."
 
       - name: Trigger Vercel redeploy
         run: |
           TOKEN="${{ secrets.VERCEL_TOKEN }}"
 
-          # Get the latest deployment for this project
-          LATEST=$(curl -sf \
+          echo "Fetching latest deployment..."
+          LATEST=$(curl -s \
             "https://api.vercel.com/v6/deployments?projectId=${VERCEL_PROJECT_ID}&teamId=${VERCEL_TEAM_ID}&limit=1" \
             -H "Authorization: Bearer $TOKEN")
 
           DEPLOY_ID=$(echo "$LATEST" | python3 -c "
           import json, sys
-          data = json.load(sys.stdin)
-          deps = data.get('deployments', [])
-          if deps: print(deps[0]['uid'])
-          ")
+          try:
+              data = json.load(sys.stdin)
+              deps = data.get('deployments', [])
+              if deps:
+                  print(deps[0]['uid'])
+          except Exception as ex:
+              print('PARSE_ERROR:' + str(ex), file=sys.stderr)
+          " 2>&1)
 
-          if [ -z "$DEPLOY_ID" ]; then
-            echo "No existing deployment found — Vercel will deploy on next git push."
+          if [ -z "$DEPLOY_ID" ] || echo "$DEPLOY_ID" | grep -q "PARSE_ERROR"; then
+            echo "No existing deployment found or parse error — skipping redeploy."
+            echo "Vercel will pick up the new env on its next deploy."
             exit 0
           fi
 
-          echo "Redeploying $DEPLOY_ID with new env..."
-          curl -sf -X POST \
+          echo "Redeploying $DEPLOY_ID with updated env..."
+          RESULT=$(curl -s -X POST \
             "https://api.vercel.com/v13/deployments?teamId=${VERCEL_TEAM_ID}&forceNew=1" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"name\":\"mind-vault-api\",\"deploymentId\":\"$DEPLOY_ID\"}"
-
-          echo "Redeploy triggered."
+            -d "{\"name\":\"mind-vault-api\",\"deploymentId\":\"$DEPLOY_ID\"}")
+          echo "Redeploy result: $RESULT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
