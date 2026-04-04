@@ -22,9 +22,9 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
     Returns [] on any error — callers should handle gracefully.
     """
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
     except ImportError:
-        logger.warning("duckduckgo-search not installed: pip install duckduckgo-search")
+        logger.warning("ddgs not installed: pip install ddgs")
         return []
 
     try:

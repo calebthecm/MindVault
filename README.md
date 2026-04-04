@@ -253,6 +253,6 @@ python-dotenv       .env file loading
 pypdf               PDF ingestion
 prompt_toolkit      TUI and interactive input
 rich                markdown rendering in terminal
-duckduckgo-search   web search (no API key)
+ddgs                web search (no API key)
 trafilatura         web page content extraction
 ```
