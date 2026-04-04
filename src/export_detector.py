@@ -31,8 +31,8 @@ PREVIEW_BYTES = 800
 
 def find_export_dirs(base_dir: Path = BRAIN_DIR) -> list[Path]:
     """
-    Find all directories under base_dir that look like export batches.
-    A directory qualifies if it contains at least one .json file.
+    Find all directories under base_dir that contain indexable content.
+    A directory qualifies if it has at least one .json, .pdf, .txt, or .md file.
     Known non-export directories (vaults, source code, etc.) are excluded.
     """
     exports = []
@@ -41,10 +41,15 @@ def find_export_dirs(base_dir: Path = BRAIN_DIR) -> list[Path]:
             continue
         if entry.name.startswith(".") or entry.name in EXCLUDED_DIRS:
             continue
-        json_files = list(entry.glob("*.json"))
-        if json_files:
+        indexable = (
+            list(entry.glob("*.json"))
+            + list(entry.glob("*.pdf"))
+            + list(entry.glob("*.txt"))
+            + list(entry.glob("*.md"))
+        )
+        if indexable:
             exports.append(entry)
-            logger.info(f"Found export dir: {entry.name} ({len(json_files)} JSON files)")
+            logger.info(f"Found export dir: {entry.name} ({len(indexable)} indexable files)")
     return exports
 
 

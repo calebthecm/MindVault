@@ -298,6 +298,6 @@ def load_vault(
 
     logger.info(
         f"Loaded {len(docs)} notes from {vault_dir.name} "
-        f"({stale_count} stale{'— excluded' if skip_stale else '— included'})"
+        f"({stale_count} stale — {'excluded' if skip_stale else 'included'})"
     )
     return docs

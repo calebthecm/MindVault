@@ -263,6 +263,9 @@ def chunk_document(doc: Document) -> list[Chunk]:
         chunks = _chunk_by_headings(doc)
     elif doc.source_type == SourceType.PDF_DOCUMENT:
         chunks = _chunk_pdf(doc)
+    elif doc.source_type == SourceType.PLAIN_TEXT:
+        # Plain text files use paragraph splitting with a longer half-life (treated like notes)
+        chunks = _chunk_by_paragraphs(doc, half_life_days=365)
     else:
         # memories, projects, generic
         chunks = _chunk_by_paragraphs(doc, half_life_days=180)

@@ -2,13 +2,13 @@
 mindvault/tui.py — Claude Code-style TUI for MindVault.
 
 Layout:
-  ╭─── MindVault v0.3.0 ────────────────────────────────────────────────────────╮
+  ╭─── MindVault v0.4.0 ────────────────────────────────────────────────────────╮
   │                         │ Getting started                                    │
   │   Welcome back, Caleb!  │ ingest    index your data                         │
   │                         │ chat      start chatting                           │
   │      (brain logo)       │ Shift+Tab cycle modes                              │
   │                         │ ─────────────────────────────────────────────────  │
-  │  MindVault v0.3.0       │ Recent sessions                                    │
+  │  MindVault v0.4.0       │ Recent sessions                                    │
   │  llama3.2 · nomic       │ 2026-04-03  "What is MindVault?"                  │
   │                         │                                                    │
   │  Personal use — free    │                                                    │
@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Callable
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.patch_stdout import run_in_terminal
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -350,7 +351,7 @@ class BrainPrompt:
                         style=TUI_STYLE,
                     )
 
-                event.app.run_in_terminal(_warn)
+                run_in_terminal(_warn)
 
         return PromptSession(
             key_bindings=kb,

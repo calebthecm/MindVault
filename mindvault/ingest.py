@@ -1,11 +1,17 @@
 """
-ingest.py — Index all export data into vectors + generate Obsidian notes.
+ingest.py — Index all data into vectors + generate Obsidian notes.
+
+Handles any combination of content in a directory:
+  - JSON conversation exports (Anthropic, OpenAI, or LLM-auto-detected format)
+  - PDF files (.pdf)
+  - Plain text and Markdown files (.txt, .md)
+  - Obsidian vaults (My Brain / Private Brain)
 
 Steps:
-  1. Auto-discovers every export directory in Brain/ (any folder with .json files)
-  2. Detects the format of each export (Anthropic, OpenAI, or auto-detected via llama3.2)
-  3. Parses conversations into normalized Document objects
-  4. Chunks each document into embeddable pieces
+  1. Auto-discovers every qualifying directory in Brain/ (JSON, PDF, or text files)
+  2. Detects JSON format via known parsers or llama3.2 for unknown formats
+  3. Normalizes all content into Document objects
+  4. Chunks documents into embeddable pieces
   5. Embeds chunks using nomic-embed-text via Ollama
   6. Stores vectors in Qdrant + metadata in SQLite (idempotent — safe to re-run)
   7. Generates Obsidian .md notes with LLM summaries and category decisions
@@ -36,6 +42,7 @@ from mindvault.config import (
     VAULT_PRIVATE,
 )
 from mindvault.generate_notes import generate_notes
+from src.adapters.pdf import load_pdfs_from_dir
 from src.export_detector import find_export_dirs, load_conversations_from_dir
 from src.ingestion.chunker import chunk_documents
 from src.ingestion.embedder import embed_chunks
@@ -45,12 +52,66 @@ from src.memory.store import MemoryStore
 from src.models import Document, PrivacyLevel, SourceType, VaultName
 from src.pipeline import run_obsidian_ingestion
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
+# Sub-module loggers are noisy at INFO level — only surface warnings and errors.
+logging.basicConfig(level=logging.WARNING, format="%(message)s")
 logger = logging.getLogger("ingest")
+
+SEP = "─" * 52
+
+
+def _head(msg: str) -> None:
+    print(f"\n{SEP}")
+    print(f"  {msg}")
+    print(SEP)
+
+
+def _step(msg: str) -> None:
+    print(f"\n  {msg}")
+
+
+def _ok(label: str, docs: int, chunks: int) -> None:
+    print(f"    {label:<16} {docs:>3} docs  →  {chunks:>4} chunks")
+
+
+def _warn(msg: str) -> None:
+    print(f"  [!] {msg}")
+
+
+def _err(msg: str) -> None:
+    print(f"\n  [ERROR] {msg}\n")
+
+
+def load_plain_text_from_dir(
+    directory: Path,
+    privacy_level: PrivacyLevel = PrivacyLevel.PUBLIC,
+) -> list[Document]:
+    """Load .txt and standalone .md files from a directory as plain-text Documents."""
+    import hashlib
+    from datetime import datetime, timezone
+
+    docs = []
+    for path in sorted(directory.glob("*.txt")) + sorted(directory.glob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except Exception as e:
+            _warn(f"Could not read '{path.name}': {e}")
+            continue
+        if not text:
+            continue
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        doc_id = "txt_" + hashlib.sha256(str(path).encode()).hexdigest()[:16]
+        docs.append(Document(
+            id=doc_id,
+            source_type=SourceType.PLAIN_TEXT,
+            vault=VaultName.NONE,
+            privacy_level=privacy_level,
+            title=path.stem,
+            body=text,
+            created_at=mtime,
+            updated_at=mtime,
+            metadata={"file_path": str(path)},
+        ))
+    return docs
 
 
 def conversations_to_documents(convos: list[dict], export_batch: str) -> list[Document]:
@@ -117,12 +178,11 @@ def run_vault_indexing(store: BrainStore, force: bool = False) -> dict:
     """Ingest My Brain and Private Brain Obsidian vaults."""
     total = {"docs": 0, "chunks": 0}
     vaults = [
-        (VAULT_MY_BRAIN,  VaultName.MY_BRAIN,      PrivacyLevel.PUBLIC),
-        (VAULT_PRIVATE,   VaultName.PRIVATE_BRAIN,  PrivacyLevel.PRIVATE),
+        (VAULT_MY_BRAIN,  VaultName.MY_BRAIN,      PrivacyLevel.PUBLIC,  "My Brain"),
+        (VAULT_PRIVATE,   VaultName.PRIVATE_BRAIN,  PrivacyLevel.PRIVATE, "Private Brain"),
     ]
-    for vault_dir, vault_name, privacy_level in vaults:
+    for vault_dir, vault_name, privacy_level, label in vaults:
         if not vault_dir.exists():
-            logger.info(f"Vault not found, skipping: {vault_dir.name}")
             continue
         result = run_obsidian_ingestion(
             vault_dir=vault_dir,
@@ -131,146 +191,227 @@ def run_vault_indexing(store: BrainStore, force: bool = False) -> dict:
             privacy_level=privacy_level,
             force=force,
         )
-        total["docs"]   += result.get("docs_processed", 0)
-        total["chunks"] += result.get("chunks_created", 0)
+        d = result.get("docs_processed", 0)
+        c = result.get("chunks_created", 0)
+        if d:
+            _ok(label, d, c)
+        total["docs"]   += d
+        total["chunks"] += c
     return total
 
 
+def _index_doc_list(
+    docs: list[Document],
+    store: BrainStore,
+    batch_id: str,
+    force: bool,
+) -> tuple[int, int]:
+    """Embed and store a list of Documents. Returns (doc_count, chunk_count)."""
+    new_docs = [d for d in docs if not store.is_document_ingested(d.id)] if not force else docs
+    if not new_docs:
+        return 0, 0
+    chunks = chunk_documents(new_docs)
+    pairs = embed_chunks(chunks)
+    store.upsert_chunks(pairs, export_batch=batch_id)
+    return len(new_docs), len(chunks)
+
+
 def run_indexing(store: BrainStore, force: bool = False, folder: str | None = None) -> dict:
-    """Index export directories into Qdrant + SQLite.
+    """Index a directory into Qdrant + SQLite.
+
+    Handles any combination of:
+    - JSON conversation exports (Anthropic, OpenAI, or LLM-detected generic format)
+    - PDF files
+    - Plain text and Markdown files (.txt, .md)
 
     If folder is given, index only that directory.
-    Otherwise auto-discover all data-* dirs in BRAIN_DIR.
+    Otherwise auto-discover all qualifying dirs in BRAIN_DIR.
     """
     from pathlib import Path as _Path
     if folder:
         target = _Path(folder).resolve()
         if not target.exists():
-            logger.error(f"Folder not found: {target}")
+            _err(f"Folder not found: {target}")
             return {"docs": 0, "chunks": 0}
         export_dirs = [target]
     else:
         export_dirs = find_export_dirs(cfg.BRAIN_DIR)
+
     if not export_dirs:
-        logger.warning("No export directories found")
         return {"docs": 0, "chunks": 0}
 
+    print(f"  Found {len(export_dirs)} folder(s) to scan")
     total_docs = 0
     total_chunks = 0
 
-    for export_dir in export_dirs:
+    for i, export_dir in enumerate(export_dirs, 1):
         batch_id = export_dir.name
 
         if not force and store.is_batch_ingested(batch_id):
-            logger.info(f"Batch '{batch_id}' already indexed. Use --force to re-index.")
+            print(f"  [{i}/{len(export_dirs)}] {batch_id}  (already indexed — skip with --force to re-run)")
             continue
 
-        logger.info(f"=== Indexing: {batch_id} ===")
+        print(f"\n  [{i}/{len(export_dirs)}] {batch_id}")
+        batch_docs = 0
+        batch_chunks = 0
 
+        # ── JSON conversation exports ─────────────────────────────────────────
         convos = load_conversations_from_dir(export_dir)
-        if not convos:
-            logger.warning(f"No conversations loaded from {batch_id}")
+        if convos:
+            conv_docs = conversations_to_documents(convos, export_batch=batch_id)
+            d, c = _index_doc_list(conv_docs, store, batch_id, force)
+            batch_docs += d
+            batch_chunks += c
+            if d:
+                _ok("Conversations", d, c)
+
+        # ── PDF files ─────────────────────────────────────────────────────────
+        pdf_docs = load_pdfs_from_dir(export_dir)
+        if pdf_docs:
+            d, c = _index_doc_list(pdf_docs, store, batch_id, force)
+            batch_docs += d
+            batch_chunks += c
+            if d:
+                _ok("PDFs", d, c)
+
+        # ── Plain text / Markdown files ───────────────────────────────────────
+        txt_docs = load_plain_text_from_dir(export_dir)
+        if txt_docs:
+            d, c = _index_doc_list(txt_docs, store, batch_id, force)
+            batch_docs += d
+            batch_chunks += c
+            if d:
+                _ok("Text files", d, c)
+
+        if not convos and not pdf_docs and not txt_docs:
+            _warn(f"No recognizable content found in '{batch_id}'")
+            _warn("Expected: .json exports, .pdf files, or .txt/.md files")
             continue
 
-        docs = conversations_to_documents(convos, export_batch=batch_id)
-        new_docs = [d for d in docs if not store.is_document_ingested(d.id)] if not force else docs
-
-        if not new_docs:
-            logger.info("All documents already indexed")
+        if batch_docs == 0:
+            print(f"    (nothing new to index)")
             store.record_batch(batch_id, "auto", str(export_dir), 0, 0)
             continue
 
-        chunks = chunk_documents(new_docs)
-        pairs = embed_chunks(chunks)
-        store.upsert_chunks(pairs, export_batch=batch_id)
-        store.record_batch(batch_id, "auto", str(export_dir), len(new_docs), len(chunks))
-
-        total_docs += len(new_docs)
-        total_chunks += len(chunks)
-        logger.info(f"Indexed {len(new_docs)} docs → {len(chunks)} chunks from {batch_id}")
+        store.record_batch(batch_id, "auto", str(export_dir), batch_docs, batch_chunks)
+        total_docs += batch_docs
+        total_chunks += batch_chunks
 
     return {"docs": total_docs, "chunks": total_chunks}
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Brain ingestion pipeline")
+    parser = argparse.ArgumentParser(description="MindVault ingestion pipeline")
     parser.add_argument("folder", nargs="?", default=None,
-                        help="Specific export folder to ingest (default: auto-discover all)")
-    parser.add_argument("--index-only",   action="store_true", help="Skip note generation")
+                        help="Specific folder to ingest (default: auto-discover all)")
+    parser.add_argument("--index-only",   action="store_true", help="Skip Obsidian note generation")
     parser.add_argument("--notes-only",   action="store_true", help="Skip vector indexing")
     parser.add_argument("--no-vaults",    action="store_true", help="Skip Obsidian vault ingestion")
     parser.add_argument("--force",        action="store_true", help="Re-index already-processed content")
     parser.add_argument("--stats",        action="store_true", help="Show index stats and exit")
-    parser.add_argument("--no-llm",       action="store_true", help="Disable llama3.2 (keyword rules only)")
+    parser.add_argument("--no-llm",       action="store_true", help="Disable LLM calls (faster, keyword-only)")
     parser.add_argument("--consolidate",  action="store_true",
-                        help="Run memory consolidation after indexing (merges near-duplicate summaries)")
+                        help="Merge near-duplicate memories after indexing")
     parser.add_argument("--in-memory",    action="store_true", help="Use in-memory Qdrant (no persistence)")
     args = parser.parse_args()
 
     if args.no_llm:
         cfg.USE_LLM_SUMMARIZATION = False
         cfg.USE_LLM_CATEGORIZATION = False
-        logger.info("LLM disabled — using keyword rules only")
 
     qdrant_path = None if args.in_memory else QDRANT_PATH
-    store = BrainStore(db_path=DB_PATH, qdrant_path=qdrant_path)
 
+    try:
+        store = BrainStore(db_path=DB_PATH, qdrant_path=qdrant_path)
+    except Exception as e:
+        _err(f"Could not open the brain index: {e}")
+        _err("Try running: python mindvault.py ingest --in-memory  to test without storage")
+        sys.exit(1)
+
+    # ── Stats only ────────────────────────────────────────────────────────────
     if args.stats:
         stats = store.stats()
-        print("\nBrain Index Statistics")
-        print("=" * 40)
-        for key, val in stats.items():
-            if isinstance(val, dict):
-                print(f"{key}:")
-                for k, v in val.items():
-                    print(f"  {k}: {v}")
-            else:
-                print(f"{key}: {val}")
+        _head("Brain Index")
+        print(f"  Documents    {stats['documents']}")
+        print(f"  Chunks       {stats['chunks']}")
+        print(f"  Batches      {stats['batches']}")
+        print(f"  Public vecs  {stats['qdrant_public_vectors']}")
+        print(f"  Private vecs {stats['qdrant_private_vectors']}")
+        if stats.get("by_source_type"):
+            print("\n  By source type:")
+            for k, v in stats["by_source_type"].items():
+                print(f"    {k}: {v}")
+        print()
         return
+
+    _head("MindVault — Indexing")
+    if args.no_llm:
+        print("  (LLM disabled — using keyword rules only)\n")
 
     # ── Step 1: Vector indexing ───────────────────────────────────────────────
     if not args.notes_only:
-        # Anthropic / other AI exports
         result = run_indexing(store, force=args.force, folder=args.folder)
+        if result["docs"] == 0 and result["chunks"] == 0:
+            print("  Nothing new to index.")
+            print("  Drop a folder with .json, .pdf, or .txt files into Brain/ and re-run.")
 
         # Obsidian vaults (skipped when a specific folder is targeted)
         if not args.no_vaults and not args.folder:
-            vault_result = run_vault_indexing(store, force=args.force)
-            result["docs"]   += vault_result["docs"]
-            result["chunks"] += vault_result["chunks"]
+            vaults_exist = VAULT_MY_BRAIN.exists() or VAULT_PRIVATE.exists()
+            if vaults_exist:
+                _step("Obsidian vaults")
+                vault_result = run_vault_indexing(store, force=args.force)
+                result["docs"]   += vault_result["docs"]
+                result["chunks"] += vault_result["chunks"]
 
-        stats = store.stats()
-        print(f"\nIndex: {stats['documents']} docs · {stats['chunks']} chunks · "
-              f"{stats['qdrant_public_vectors']} public vectors · "
-              f"{stats['qdrant_private_vectors']} private vectors")
-
-        # ── Step 2: Link building (always runs after any indexing) ────────────
+        # ── Step 2: Memory links ──────────────────────────────────────────────
         memory_store = MemoryStore(
             db_path=DB_PATH,
             qdrant=store.qdrant,
             compressed_collections=(COLLECTION_COMPRESSED_PUBLIC, COLLECTION_COMPRESSED_PRIVATE),
         )
-        link_stats = run_linker(memory_store)
-        if link_stats["total"] > 0:
-            print(f"Links: {link_stats['entity_links']} entity_overlap edges built")
+        _step("Building memory links...")
+        try:
+            link_stats = run_linker(memory_store)
+            edges = link_stats.get("entity_links", 0)
+            print(f"  done  ({edges} edges)")
+        except Exception as e:
+            _warn(f"Link building failed: {e}")
 
         # ── Step 3: Optional consolidation ────────────────────────────────────
         if args.consolidate:
-            from src.memory.consolidator import run_consolidation
-            print("\nConsolidating near-duplicate memories...")
-            c_stats = run_consolidation(
-                memory_store=memory_store,
-                qdrant=store.qdrant,
-                collections=[COLLECTION_COMPRESSED_PUBLIC, COLLECTION_COMPRESSED_PRIVATE],
-            )
-            print(f"Consolidation: checked {c_stats['checked']}, "
-                  f"merged {c_stats['merged']} groups, skipped {c_stats['skipped']}")
+            _step("Consolidating duplicate memories...")
+            try:
+                from src.memory.consolidator import run_consolidation
+                c_stats = run_consolidation(
+                    memory_store=memory_store,
+                    qdrant=store.qdrant,
+                    collections=[COLLECTION_COMPRESSED_PUBLIC, COLLECTION_COMPRESSED_PRIVATE],
+                )
+                print(f"  done  (checked {c_stats['checked']}, "
+                      f"merged {c_stats['merged']}, skipped {c_stats['skipped']})")
+            except Exception as e:
+                _warn(f"Consolidation failed: {e}")
+
+        # ── Summary ───────────────────────────────────────────────────────────
+        stats = store.stats()
+        print(f"\n{SEP}")
+        print(f"  {stats['documents']} docs  ·  {stats['chunks']} chunks  ·  "
+              f"{stats['qdrant_public_vectors']} public  ·  "
+              f"{stats['qdrant_private_vectors']} private vectors")
+        print(SEP)
 
     # ── Step 4: Generate Obsidian notes ───────────────────────────────────────
     if not args.index_only:
-        print(f"\nGenerating Obsidian notes...")
-        note_count = generate_notes(vault=VAULT_MY_BRAIN)
-        print(f"Done. {note_count} notes written to '{VAULT_MY_BRAIN.name}/'.")
+        _step(f"Generating notes in '{VAULT_MY_BRAIN.name}/'...")
+        try:
+            note_count = generate_notes(vault=VAULT_MY_BRAIN)
+            print(f"  done  ({note_count} notes written)")
+        except Exception as e:
+            _warn(f"Note generation failed: {e}")
+            _warn("Your index is fine — notes are optional. Re-run with: python mindvault.py notes")
+
+    print(f"\n  All done. Start chatting: python mindvault.py chat\n")
 
 
 if __name__ == "__main__":

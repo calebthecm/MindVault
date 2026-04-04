@@ -85,6 +85,9 @@ class MemoryStore:
                 )
                 logger.info(f"Created compressed collection: {name}")
 
+    # Stable namespace for deterministic compressed-memory IDs.
+    _COMPRESSED_NS = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
     def store_compressed(
         self,
         source_id: str,
@@ -95,7 +98,9 @@ class MemoryStore:
         collection: str,
         metadata: Optional[dict] = None,
     ) -> str:
-        compressed_id = str(uuid.uuid4())
+        # Derive a stable ID from source_id so re-processing replaces the old record
+        # instead of accumulating duplicate summaries for the same source.
+        compressed_id = str(uuid.uuid5(self._COMPRESSED_NS, source_id))
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO memory_compressed

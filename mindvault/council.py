@@ -232,7 +232,7 @@ def run_decide(
     for member in COUNCIL:
         result = _call(
             member, query, context,
-            instruction=(
+            role_instruction=(
                 "Vote: AGREE, DISAGREE, or ABSTAIN on whether this is a good idea/decision. "
                 "Give one sentence explaining why."
             ),
@@ -274,17 +274,17 @@ def run_debate(
 
     pro = _call(
         visionary, query, context,
-        instruction="Argue FOR this idea/decision. Make the strongest possible case using the memories.",
+        role_instruction="Argue FOR this idea/decision. Make the strongest possible case using the memories.",
         model=model, base_url=base_url,
     )
     con = _call(
         devil, query, context,
-        instruction="Argue AGAINST this idea/decision. Make the strongest possible case against it.",
+        role_instruction="Argue AGAINST this idea/decision. Make the strongest possible case against it.",
         model=model, base_url=base_url,
     )
     moderate = _call(
         analyst, query, context,
-        instruction=(
+        role_instruction=(
             "You have heard both sides. Moderate: what does the evidence actually support? "
             "Be impartial."
         ),

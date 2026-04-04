@@ -93,7 +93,7 @@ def check_python() -> None:
 
 
 def check_dependencies() -> None:
-    header("Step 2 — Python packages")
+    header("Step 3 — Python packages")
 
     missing = []
     for pkg in REQUIRED_PACKAGES:
@@ -197,7 +197,7 @@ def select_model_backend() -> tuple[str, str, str, str]:
     Let user choose a backend.
     Returns (backend_type, ollama_base_url, llm_model, embedding_model).
     """
-    header("Step 3 — Model backend")
+    header("Step 4 — Model backend")
     info("Choose how MindVault will run AI models:\n")
     info("  1) Ollama  (local, recommended — no data leaves your machine)")
     info("  2) OpenAI-compatible API  (e.g. OpenAI, Groq, LM Studio, vLLM)")
@@ -240,7 +240,7 @@ def _write_env_template(keys: dict[str, str]) -> None:
 
 def patch_config(backend: str, ollama_base: str, llm_model: str, embedding_model: str) -> None:
     """Update LLM_BACKEND, OLLAMA_BASE, LLM_MODEL, EMBEDDING_MODEL in config.py in-place."""
-    header("Step 4 — Writing config")
+    header("Step 5 — Writing config")
 
     if not CONFIG_PATH.exists():
         warn("config.py not found — skipping config patch")
@@ -274,7 +274,7 @@ def patch_config(backend: str, ollama_base: str, llm_model: str, embedding_model
 
 
 def create_directories() -> None:
-    header("Step 5 — Directories")
+    header("Step 6 — Directories")
     for d in REQUIRED_DIRS:
         if d.exists():
             ok(f"{d.name}/  (exists)")
@@ -335,7 +335,7 @@ data-*/
 
 
 def create_gitignore() -> None:
-    header("Step 6 — .gitignore")
+    header("Step 7 — .gitignore")
     if GITIGNORE_PATH.exists():
         ok(".gitignore already exists — not overwriting")
         return
@@ -349,20 +349,22 @@ def create_gitignore() -> None:
 def print_next_steps() -> None:
     header("Setup complete — next steps")
     print("""
-  1. Drop your AI export folder into Brain/
-       Anthropic: download from claude.ai → Settings → Export Data
-       OpenAI:    download from chat.openai.com → Settings → Data Controls → Export
+  1. Add content to Brain/
+       Drop any folder containing your data — it can be:
+         - Anthropic export  (claude.ai → Settings → Export Data)
+         - OpenAI export     (chat.openai.com → Settings → Data Controls → Export)
+         - PDF files, text files, or any JSON export
 
   2. Index your data:
-       python ingest.py
+       python mindvault.py ingest
 
   3. Start chatting with your brain:
-       python chat.py
+       python mindvault.py chat
 
-  Optional flags:
-       python ingest.py --no-llm     # faster, keyword-only (no llama calls)
-       python ingest.py --stats      # show what's indexed
-       python chat.py "your question"  # single-query mode
+  Useful flags:
+       python mindvault.py ingest --no-llm   # faster, skips LLM calls
+       python mindvault.py stats             # show what's indexed
+       python mindvault.py ingest --force    # re-index everything
 """)
     print(SEP)
     print("  MindVault is ready. Your brain is local, private, yours.")
@@ -376,7 +378,7 @@ def collect_user_info() -> None:
     """Ask for the user's name and save it to user config."""
     from mindvault import user_config
 
-    header("Step 1 — About you")
+    header("Step 2 — About you")
     current = user_config.get_name()
     prompt = "Your first name (shown in the welcome screen)"
     name = ask(prompt, default=current or "")

@@ -189,6 +189,13 @@ def run_chat(
             user_config.set_name(entered)
 
     # ── Welcome box ────────────────────────────────────────────────────────────
+    # Wait briefly for background version check to complete before rendering welcome box.
+    # The daemon thread started at the top of run_chat — by now Ollama preflight and
+    # Qdrant init have consumed enough time that the fetch is usually done, but we
+    # give it up to 1.5 s more to be sure the release banner shows correctly.
+    from mindvault.version import latest_version as _latest
+    _latest(wait=True, timeout=1.5)
+
     from src.sessions.manager import list_sessions
     recent = list_sessions(SESSIONS_DIR)[:5] if SESSIONS_DIR.exists() else []
     print_welcome(
@@ -225,6 +232,21 @@ def run_chat(
             compressed_threshold=COMPRESSED_SCORE_THRESHOLD,
             expand_links=expand_links,
         )
+        if include_private:
+            from src.ingestion.store import COLLECTION_PRIVATE
+            private_chunks = retrieve(
+                query_vector=vector,
+                qdrant=qdrant,
+                memory_store=memory_store,
+                raw_collection=COLLECTION_PRIVATE,
+                compressed_collection=COLLECTION_COMPRESSED_PRIVATE,
+                top_k=CHAT_TOP_K,
+                compressed_threshold=COMPRESSED_SCORE_THRESHOLD,
+                expand_links=expand_links,
+            )
+            combined = chunks + private_chunks
+            combined.sort(key=lambda c: c["score"], reverse=True)
+            chunks = combined[:CHAT_TOP_K]
         last_chunks = chunks
 
         if not chunks:
@@ -286,7 +308,11 @@ def run_chat(
         if user_input is None:
             print("\nEnding session.")
             if session:
-                _process_session_end(session, memory_store)
+                try:
+                    _process_session_end(session, memory_store)
+                except KeyboardInterrupt:
+                    print("\n[Session save interrupted — partial data may be lost]")
+                    session.save_and_index()
             break
 
         if not user_input:
@@ -296,7 +322,11 @@ def run_chat(
         if user_input.lower() in ("/quit", "/exit"):
             print("Ending session.")
             if session:
-                _process_session_end(session, memory_store)
+                try:
+                    _process_session_end(session, memory_store)
+                except KeyboardInterrupt:
+                    print("\n[Session save interrupted — partial data may be lost]")
+                    session.save_and_index()
             break
 
         if user_input.lower() == "/clear":
