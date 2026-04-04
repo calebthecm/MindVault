@@ -178,7 +178,7 @@ def run_chat(
             if not session:
                 print(f"Session '{resume_session_id}' not found.")
                 sys.exit(1)
-            history = [{"role": t["role"], "content": t["content"]} for t in session.turns]
+            history = [{"role": t["role"], "content": t["content"]} for t in session.turns[-40:]]
             session_entities = list(session.entities)
             _print_transcript(session.turns)
             print(f"[Resumed session from {session.started_at[:19].replace('T', ' ')} — {len(session.turns) // 2} exchange(s)]\n")
@@ -187,7 +187,7 @@ def run_chat(
             if not session:
                 session = Session(SESSIONS_DIR, model=LLM_MODEL)
             else:
-                history = [{"role": t["role"], "content": t["content"]} for t in session.turns]
+                history = [{"role": t["role"], "content": t["content"]} for t in session.turns[-40:]]
                 session_entities = list(session.entities)
                 _print_transcript(session.turns)
                 print(f"[Resumed last session from {session.started_at[:19].replace('T', ' ')} — {len(session.turns) // 2} exchange(s)]\n")
@@ -399,7 +399,7 @@ def run_chat(
             session = loaded
             history.clear()
             history.extend(
-                {"role": t["role"], "content": t["content"]} for t in session.turns
+                {"role": t["role"], "content": t["content"]} for t in session.turns[-40:]
             )
             session_entities = list(session.entities)
             _print_transcript(session.turns)

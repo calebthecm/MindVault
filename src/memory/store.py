@@ -14,8 +14,13 @@ import json
 import logging
 import sqlite3
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
@@ -54,7 +59,8 @@ class MemoryStore:
                     source_id TEXT NOT NULL,
                     chunk_id TEXT,
                     confidence REAL DEFAULT 1.0,
-                    created_at TEXT DEFAULT (datetime('now'))
+                    created_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(entity_type, lower(name), source_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS memory_links (
@@ -63,7 +69,8 @@ class MemoryStore:
                     to_id TEXT NOT NULL,
                     link_type TEXT NOT NULL,
                     strength REAL DEFAULT 1.0,
-                    created_at TEXT DEFAULT (datetime('now'))
+                    created_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(from_id, to_id, link_type)
                 );
 
                 CREATE TABLE IF NOT EXISTS memory_importance (
@@ -111,7 +118,13 @@ class MemoryStore:
                 json.dumps(chunk_ids), len(summary) // 4,
             ))
 
-        payload = {"summary": summary, "source_id": source_id, "source_type": source_type}
+        # Include created_at so the retriever can compute recency for compressed results
+        payload = {
+            "summary": summary,
+            "source_id": source_id,
+            "source_type": source_type,
+            "created_at": (metadata or {}).get("created_at", _now_iso()),
+        }
         if metadata:
             payload.update(metadata)
 
@@ -125,7 +138,7 @@ class MemoryStore:
         with sqlite3.connect(self.db_path) as conn:
             for entity in entities:
                 conn.execute("""
-                    INSERT INTO memory_entities (id, entity_type, name, value, source_id, chunk_id, confidence)
+                    INSERT OR IGNORE INTO memory_entities (id, entity_type, name, value, source_id, chunk_id, confidence)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
                     str(uuid.uuid4()),

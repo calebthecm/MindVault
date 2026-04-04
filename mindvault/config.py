@@ -31,7 +31,7 @@ QDRANT_PATH = BRAIN_DIR / ".qdrant"
 # Directories that are never treated as export sources
 EXCLUDED_DIRS = {
     ".venv", ".qdrant", "src", "mindvault", "__pycache__", ".git",
-    "My Brain", "Private Brain",
+    "My Brain", "Private Brain", "sessions",
 }
 
 # ─── Models ───────────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ OLLAMA_BASE = "http://localhost:11434"
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 
 # Model used for: summarizing conversations, deciding categories, chat interface
-LLM_MODEL = "llama3.2"
+LLM_MODEL = "gpt-oss:20b"
 
 # Model used for: generating embeddings (vector search)
 EMBEDDING_MODEL = "nomic-embed-text"
