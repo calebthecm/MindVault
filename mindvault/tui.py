@@ -2,13 +2,13 @@
 mindvault/tui.py — Claude Code-style TUI for MindVault.
 
 Layout:
-  ╭─── MindVault v0.4.0 ────────────────────────────────────────────────────────╮
+  ╭─── MindVault v0.5.0 ────────────────────────────────────────────────────────╮
   │                         │ Getting started                                    │
   │   Welcome back, Caleb!  │ ingest    index your data                         │
   │                         │ chat      start chatting                           │
   │      (brain logo)       │ Shift+Tab cycle modes                              │
   │                         │ ─────────────────────────────────────────────────  │
-  │  MindVault v0.4.0       │ Recent sessions                                    │
+  │  MindVault v0.5.0       │ Recent sessions                                    │
   │  llama3.2 · nomic       │ 2026-04-03  "What is MindVault?"                  │
   │                         │                                                    │
   │  Personal use — free    │                                                    │
