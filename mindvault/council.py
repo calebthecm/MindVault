@@ -97,12 +97,12 @@ COUNCIL: list[CouncilMember] = [
 def _build_context(chunks: list[dict], max_chars: int = 3000) -> str:
     parts = []
     total = 0
-    for i, chunk in enumerate(chunks, 1):
+    for chunk in chunks:
         title = chunk.get("title", "?")
         date = chunk.get("created_at", "")[:10]
         text = chunk.get("text", "").strip()
         layer = chunk.get("layer", "raw")
-        entry = f"[{i}] {title} ({date}, {layer})\n{text}"
+        entry = f"[{title} — {date}]\n{text}"
         if total + len(entry) > max_chars:
             parts.append("[...additional memories truncated...]")
             break
@@ -118,7 +118,7 @@ def _call(
     role_instruction: str,
     model: str,
     base_url: str,
-    timeout: float = 90.0,
+    timeout: float = 180.0,
 ) -> Optional[str]:
     from src.llm import _call_ollama
 
@@ -238,7 +238,7 @@ def run_decide(
             ),
             model=model,
             base_url=base_url,
-            timeout=60.0,
+            timeout=120.0,
         )
         if result:
             votes.append((member.vote_symbol, member.name, result.strip()))

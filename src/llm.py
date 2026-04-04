@@ -77,7 +77,7 @@ def _call_llm(
 
         except (httpx.HTTPError, KeyError, IndexError) as e:
             if attempt < RETRY_ATTEMPTS - 1:
-                logger.warning(f"LLM call attempt {attempt + 1} failed: {e}. Retrying...")
+                logger.info(f"LLM call attempt {attempt + 1} failed: {e}. Retrying...")
                 time.sleep(RETRY_DELAY)
             else:
                 logger.error(f"LLM call failed after {RETRY_ATTEMPTS} attempts: {e}")
@@ -298,11 +298,11 @@ def chat_with_brain(
         context_text = "No relevant memories found in your brain for this query."
     else:
         parts = []
-        for i, chunk in enumerate(context_chunks, 1):
+        for chunk in context_chunks:
             source = chunk.get("title", "Unknown")
             date = chunk.get("created_at", "")[:10]
             text = chunk.get("text", "").strip()
-            parts.append(f"[Memory {i}] Source: {source} ({date})\n{text}")
+            parts.append(f"[{source} — {date}]\n{text}")
         context_text = "\n\n---\n\n".join(parts)
 
     history_text = ""
