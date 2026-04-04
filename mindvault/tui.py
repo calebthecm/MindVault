@@ -32,6 +32,8 @@ from __future__ import annotations
 import getpass
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -140,6 +142,75 @@ def print_response(label: str, text: str) -> None:
     )
     print(text)
     print()
+
+
+def print_markdown_response(label: str, text: str) -> None:
+    """Render a Brain response as markdown using Rich."""
+    from rich.console import Console
+    from rich.markdown import Markdown
+    console = Console(highlight=False)
+    console.print(f"\n[bold #ff6a00]{label}:[/bold #ff6a00]")
+    console.print(Markdown(text))
+    console.print()
+
+
+# ─── Baking animation ──────────────────────────────────────────────────────────
+
+_BAKING_WORDS = [
+    "Synthesizing", "Brewing", "Cooking", "Thinking", "Distilling",
+    "Manifesting", "Forging", "Conjuring", "Weaving", "Crystallizing",
+    "Decoding", "Channeling", "Processing", "Summoning", "Baking",
+    "Fusing", "Crafting", "Compiling", "Rendering", "Calculating",
+]
+
+# Cycle through orange → red → yellow brand palette
+_BAKING_COLORS = ["#ff6a00", "#dc2626", "#ff8a2a", "#fbbf24", "#b45309", "#ff6a00"]
+
+
+class BakingAnimation:
+    """
+    Cycles animated one-word status labels with ✻ in orange/red/yellow
+    while the model is generating a response.
+
+    Usage:
+        anim = BakingAnimation()
+        anim.start()
+        ...do LLM call...
+        elapsed = anim.stop()   # clears line, returns seconds elapsed
+        print(f"✻ Baked for {elapsed:.1f}s")
+    """
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._start_time: float = 0.0
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._start_time = time.monotonic()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> float:
+        """Stop animation, clear the line, return elapsed seconds."""
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=1.0)
+        elapsed = time.monotonic() - self._start_time
+        sys.stdout.write("\r\033[2K")
+        sys.stdout.flush()
+        return elapsed
+
+    def _run(self) -> None:
+        from rich.console import Console
+        console = Console(highlight=False)
+        i = 0
+        while not self._stop.is_set():
+            word = _BAKING_WORDS[i % len(_BAKING_WORDS)]
+            color = _BAKING_COLORS[i % len(_BAKING_COLORS)]
+            console.print(f"[{color}]✻ {word}...[/{color}]", end="\r")
+            time.sleep(0.28)
+            i += 1
 
 
 def _get_username() -> str:

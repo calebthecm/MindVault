@@ -3,3 +3,4 @@ httpx
 python-dotenv
 pypdf
 prompt_toolkit
+rich

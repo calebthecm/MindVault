@@ -109,7 +109,7 @@ SESSIONS_DIR = BRAIN_DIR / "sessions"
 SUGGEST_FOLLOWUPS = True
 
 # Whether to write a session summary note back to the Obsidian vault on session end
-WRITE_SESSIONS_TO_VAULT = False  # opt-in — set to True to enable
+WRITE_SESSIONS_TO_VAULT = True  # opt-in — set to True to enable
 
 # ─── Memory layers ────────────────────────────────────────────────────────────
 

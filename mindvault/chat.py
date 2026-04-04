@@ -56,7 +56,16 @@ from mindvault.config import (
 
 from mindvault.council import run_council
 from mindvault.modes import Mode, get_config
-from mindvault.tui import BrainPrompt, print_bar, print_welcome, print_mode_switch, print_response, print_thinking
+from mindvault.tui import (
+    BakingAnimation,
+    BrainPrompt,
+    print_bar,
+    print_markdown_response,
+    print_mode_switch,
+    print_response,
+    print_thinking,
+    print_welcome,
+)
 from mindvault.version import fetch_in_background
 from src.ingestion.store import COLLECTION_PUBLIC, COLLECTION_PRIVATE
 from src.llm import compress_session
@@ -341,19 +350,12 @@ def run_chat(
             for name in members_by_mode.get(mode, []):
                 print_thinking(name)
 
-        # CHAT mode streams tokens directly — other modes wait for full response
+        # CHAT mode: animate while generating, render full markdown at end
         if mode == Mode.CHAT:
-            print_bar()
-            from prompt_toolkit import print_formatted_text
-            from prompt_toolkit.formatted_text import FormattedText
-            print_formatted_text(
-                FormattedText([("class:prompt", f"\nBrain [{config.label}]: ")]),
-                style=__import__("mindvault.tui", fromlist=["TUI_STYLE"]).TUI_STYLE,
-                end="",
-            )
+            anim = BakingAnimation()
+            anim.start()
             streamed_tokens: list[str] = []
             def _on_token(t: str) -> None:
-                print(t, end="", flush=True)
                 streamed_tokens.append(t)
             response = run_council(
                 mode=mode,
@@ -361,24 +363,29 @@ def run_chat(
                 chunks=chunks,
                 model=LLM_MODEL,
                 base_url=OLLAMA_BASE,
-                history=history if mode == Mode.CHAT else None,
+                history=history,
                 on_token=_on_token,
             )
-            print("\n")  # newline after streamed response
+            elapsed = anim.stop()
+            print_bar()
+            print(f"✻ Baked for {elapsed:.1f}s")
         else:
+            # Council modes: show thinking indicators then wait for full response
+            anim = BakingAnimation()
+            anim.start()
             response = run_council(
                 mode=mode,
                 query=query,
                 chunks=chunks,
                 model=LLM_MODEL,
                 base_url=OLLAMA_BASE,
-                history=history if mode == Mode.CHAT else None,
             )
+            elapsed = anim.stop()
 
         if response:
-            if mode != Mode.CHAT:
-                print_bar()
-                print_response(f"Brain [{config.label}]", response)
+            label = f"Brain [{config.label}]"
+            print_bar()
+            print_markdown_response(label, response)
             history.append({"role": "user", "content": query})
             history.append({"role": "assistant", "content": response})
 
