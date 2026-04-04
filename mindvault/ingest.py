@@ -27,14 +27,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import mindvault.config as cfg
-from mindvault.config import DB_PATH, QDRANT_PATH, VAULT_MY_BRAIN
+from mindvault.config import (
+    COLLECTION_COMPRESSED_PUBLIC,
+    COLLECTION_COMPRESSED_PRIVATE,
+    DB_PATH,
+    QDRANT_PATH,
+    VAULT_MY_BRAIN,
+    VAULT_PRIVATE,
+)
 from mindvault.generate_notes import generate_notes
-from src.adapters.anthropic import load_export as load_anthropic_export
 from src.export_detector import find_export_dirs, load_conversations_from_dir
 from src.ingestion.chunker import chunk_documents
 from src.ingestion.embedder import embed_chunks
 from src.ingestion.store import BrainStore
+from src.memory.linker import run_linker
+from src.memory.store import MemoryStore
 from src.models import Document, PrivacyLevel, SourceType, VaultName
+from src.pipeline import run_obsidian_ingestion
 
 logging.basicConfig(
     level=logging.INFO,
@@ -104,6 +113,29 @@ def conversations_to_documents(convos: list[dict], export_batch: str) -> list[Do
     return docs
 
 
+def run_vault_indexing(store: BrainStore, force: bool = False) -> dict:
+    """Ingest My Brain and Private Brain Obsidian vaults."""
+    total = {"docs": 0, "chunks": 0}
+    vaults = [
+        (VAULT_MY_BRAIN,  VaultName.MY_BRAIN,      PrivacyLevel.PUBLIC),
+        (VAULT_PRIVATE,   VaultName.PRIVATE_BRAIN,  PrivacyLevel.PRIVATE),
+    ]
+    for vault_dir, vault_name, privacy_level in vaults:
+        if not vault_dir.exists():
+            logger.info(f"Vault not found, skipping: {vault_dir.name}")
+            continue
+        result = run_obsidian_ingestion(
+            vault_dir=vault_dir,
+            store=store,
+            vault_name=vault_name,
+            privacy_level=privacy_level,
+            force=force,
+        )
+        total["docs"]   += result.get("docs_processed", 0)
+        total["chunks"] += result.get("chunks_created", 0)
+    return total
+
+
 def run_indexing(store: BrainStore, force: bool = False, folder: str | None = None) -> dict:
     """Index export directories into Qdrant + SQLite.
 
@@ -162,16 +194,19 @@ def run_indexing(store: BrainStore, force: bool = False, folder: str | None = No
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Brain ingestion pipeline")
-    parser.add_argument("folder", nargs="?", default=None, help="Specific export folder to ingest (default: auto-discover all)")
-    parser.add_argument("--index-only", action="store_true", help="Skip note generation")
-    parser.add_argument("--notes-only", action="store_true", help="Skip vector indexing")
-    parser.add_argument("--force", action="store_true", help="Re-index already-processed batches")
-    parser.add_argument("--stats", action="store_true", help="Show index stats and exit")
-    parser.add_argument("--no-llm", action="store_true", help="Disable llama3.2 (keyword categorization only)")
-    parser.add_argument("--in-memory", action="store_true", help="Use in-memory Qdrant (no persistence)")
+    parser.add_argument("folder", nargs="?", default=None,
+                        help="Specific export folder to ingest (default: auto-discover all)")
+    parser.add_argument("--index-only",   action="store_true", help="Skip note generation")
+    parser.add_argument("--notes-only",   action="store_true", help="Skip vector indexing")
+    parser.add_argument("--no-vaults",    action="store_true", help="Skip Obsidian vault ingestion")
+    parser.add_argument("--force",        action="store_true", help="Re-index already-processed content")
+    parser.add_argument("--stats",        action="store_true", help="Show index stats and exit")
+    parser.add_argument("--no-llm",       action="store_true", help="Disable llama3.2 (keyword rules only)")
+    parser.add_argument("--consolidate",  action="store_true",
+                        help="Run memory consolidation after indexing (merges near-duplicate summaries)")
+    parser.add_argument("--in-memory",    action="store_true", help="Use in-memory Qdrant (no persistence)")
     args = parser.parse_args()
 
-    # Apply --no-llm flag to config at runtime
     if args.no_llm:
         cfg.USE_LLM_SUMMARIZATION = False
         cfg.USE_LLM_CATEGORIZATION = False
@@ -195,16 +230,47 @@ def main() -> None:
 
     # ── Step 1: Vector indexing ───────────────────────────────────────────────
     if not args.notes_only:
+        # Anthropic / other AI exports
         result = run_indexing(store, force=args.force, folder=args.folder)
-        stats = store.stats()
-        print(f"\nIndex: {stats['documents']} docs, {stats['chunks']} chunks, "
-              f"{stats['qdrant_public_vectors']} public vectors")
 
-    # ── Step 2: Generate Obsidian notes ───────────────────────────────────────
+        # Obsidian vaults (skipped when a specific folder is targeted)
+        if not args.no_vaults and not args.folder:
+            vault_result = run_vault_indexing(store, force=args.force)
+            result["docs"]   += vault_result["docs"]
+            result["chunks"] += vault_result["chunks"]
+
+        stats = store.stats()
+        print(f"\nIndex: {stats['documents']} docs · {stats['chunks']} chunks · "
+              f"{stats['qdrant_public_vectors']} public vectors · "
+              f"{stats['qdrant_private_vectors']} private vectors")
+
+        # ── Step 2: Link building (always runs after any indexing) ────────────
+        memory_store = MemoryStore(
+            db_path=DB_PATH,
+            qdrant=store.qdrant,
+            compressed_collections=(COLLECTION_COMPRESSED_PUBLIC, COLLECTION_COMPRESSED_PRIVATE),
+        )
+        link_stats = run_linker(memory_store)
+        if link_stats["total"] > 0:
+            print(f"Links: {link_stats['entity_links']} entity_overlap edges built")
+
+        # ── Step 3: Optional consolidation ────────────────────────────────────
+        if args.consolidate:
+            from src.memory.consolidator import run_consolidation
+            print("\nConsolidating near-duplicate memories...")
+            c_stats = run_consolidation(
+                memory_store=memory_store,
+                qdrant=store.qdrant,
+                collections=[COLLECTION_COMPRESSED_PUBLIC, COLLECTION_COMPRESSED_PRIVATE],
+            )
+            print(f"Consolidation: checked {c_stats['checked']}, "
+                  f"merged {c_stats['merged']} groups, skipped {c_stats['skipped']}")
+
+    # ── Step 4: Generate Obsidian notes ───────────────────────────────────────
     if not args.index_only:
-        print(f"\nGenerating Obsidian notes...\n")
+        print(f"\nGenerating Obsidian notes...")
         note_count = generate_notes(vault=VAULT_MY_BRAIN)
-        print(f"\nDone. {note_count} notes written to '{VAULT_MY_BRAIN.name}/'.")
+        print(f"Done. {note_count} notes written to '{VAULT_MY_BRAIN.name}/'.")
 
 
 if __name__ == "__main__":

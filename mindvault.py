@@ -28,13 +28,14 @@ HELP_TEXT = {
 MindVault — local-first second brain
 
 Commands:
-  chat       Interactive REPL (default if no command given)
-  ingest     Index export data into the brain
-  notes      Regenerate Obsidian notes only
-  setup      First-run configuration wizard
-  stats      Show index and session statistics
-  sessions   List resumable chat sessions
-  help       Show this help, or: help <command>
+  chat          Interactive REPL (default if no command given)
+  ingest        Index export data, Obsidian vaults, and build memory links
+  notes         Regenerate Obsidian notes only
+  consolidate   Merge near-duplicate compressed memories
+  setup         First-run configuration wizard
+  stats         Show index and session statistics
+  sessions      List resumable chat sessions
+  help          Show this help, or: help <command>
 
 Run: python mindvault.py <command> [options]
 """,
@@ -63,10 +64,12 @@ Commands during a session:
 ingest — Index data into the brain
 
 Usage:
-  python mindvault.py ingest                    # auto-discover all data-* dirs
-  python mindvault.py ingest ./my-export/       # ingest a specific folder
+  python mindvault.py ingest                    # auto-discover exports + ingest vaults
+  python mindvault.py ingest ./my-export/       # ingest a specific folder only
   python mindvault.py ingest --force            # re-index even if already processed
   python mindvault.py ingest --no-llm           # skip LLM calls (keyword rules only)
+  python mindvault.py ingest --no-vaults        # skip Obsidian vault ingestion
+  python mindvault.py ingest --consolidate      # merge near-duplicate memories after indexing
   python mindvault.py ingest --stats            # show index stats and exit
   python mindvault.py ingest --notes-only       # regenerate notes without re-embedding
   python mindvault.py ingest --index-only       # embed only, skip note generation
@@ -204,6 +207,43 @@ def cmd_sessions(args: list[str]) -> None:
     print()
 
 
+def cmd_consolidate(args: list[str]) -> None:
+    """Merge near-duplicate compressed memories to reduce redundancy."""
+    dry_run = "--dry-run" in args
+    from mindvault.config import (
+        DB_PATH, QDRANT_PATH,
+        COLLECTION_COMPRESSED_PUBLIC, COLLECTION_COMPRESSED_PRIVATE,
+        LLM_MODEL, OLLAMA_BASE,
+    )
+    from qdrant_client import QdrantClient
+    from src.memory.store import MemoryStore
+    from src.memory.consolidator import run_consolidation
+
+    if not QDRANT_PATH.exists():
+        print("No index found. Run 'python mindvault.py ingest' first.")
+        sys.exit(1)
+
+    qdrant = QdrantClient(path=str(QDRANT_PATH))
+    memory_store = MemoryStore(
+        db_path=DB_PATH,
+        qdrant=qdrant,
+        compressed_collections=(COLLECTION_COMPRESSED_PUBLIC, COLLECTION_COMPRESSED_PRIVATE),
+    )
+
+    if dry_run:
+        print("\n[Dry run — no changes will be made]\n")
+
+    print("Scanning for near-duplicate compressed memories...")
+    stats = run_consolidation(
+        memory_store=memory_store,
+        qdrant=qdrant,
+        collections=[COLLECTION_COMPRESSED_PUBLIC, COLLECTION_COMPRESSED_PRIVATE],
+        dry_run=dry_run,
+    )
+    print(f"\nDone — checked {stats['checked']}, "
+          f"merged {stats['merged']} groups, skipped {stats['skipped']}\n")
+
+
 COMMANDS = {
     "chat": cmd_chat,
     "ingest": cmd_ingest,
@@ -211,6 +251,7 @@ COMMANDS = {
     "setup": cmd_setup,
     "stats": cmd_stats,
     "sessions": cmd_sessions,
+    "consolidate": cmd_consolidate,
     "help": cmd_help,
 }
 
