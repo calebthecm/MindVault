@@ -2,10 +2,24 @@
 mindvault/tui.py — Claude Code-style TUI for MindVault.
 
 Layout:
-  ────────────────────────── top bar ──────────────────────────
+  ╭─── MindVault v0.3.0 ────────────────────────────────────────────────────────╮
+  │                         │ Getting started                                    │
+  │   Welcome back, Caleb!  │ ingest    index your data                         │
+  │                         │ chat      start chatting                           │
+  │      (brain logo)       │ Shift+Tab cycle modes                              │
+  │                         │ ─────────────────────────────────────────────────  │
+  │  MindVault v0.3.0       │ Recent sessions                                    │
+  │  llama3.2 · nomic       │ 2026-04-03  "What is MindVault?"                  │
+  │                         │                                                    │
+  │  Personal use — free    │                                                    │
+  │  Commercial — contact   │                                                    │
+  │  /Users/caleb/Brain     │                                                    │
+  ╰────────────────────────────────────────────────────────────────────────────╯
+
+  ─────────────────────────────────────────────────────────────────────────────
   ❯ <user input>
-  ────────────────────────── bottom bar ───────────────────────
-  [MODE]                               New Release x.x.x (if any)
+  ─────────────────────────────────────────────────────────────────────────────
+  [MODE]                                               New Release x.x.x
 
 Key bindings:
   Shift+Tab      — cycle to next mode
@@ -15,7 +29,10 @@ Key bindings:
 
 from __future__ import annotations
 
+import getpass
 import shutil
+import subprocess
+from pathlib import Path
 from typing import Callable
 
 from prompt_toolkit import PromptSession
@@ -37,6 +54,17 @@ TUI_STYLE = Style.from_dict({
     "release":      "fg:#16a34a bold",           # green — new release
     "separator":    "fg:#333333",
     "think":        "fg:#6b7280 italic",         # council "thinking" lines
+    # welcome box
+    "box-border":   "fg:#444444",
+    "box-title":    "fg:#ff6a00 bold",
+    "box-name":     "fg:#ffffff bold",
+    "box-logo":     "fg:#ff8a2a",
+    "box-meta":     "fg:#888888",
+    "box-license":  "fg:#6b7280 italic",
+    "box-tip-head": "fg:#ff8a2a bold",
+    "box-tip":      "fg:#aaaaaa",
+    "box-session":  "fg:#888888",
+    "box-divider":  "fg:#333333",
 })
 
 
@@ -112,25 +140,139 @@ def print_response(label: str, text: str) -> None:
     print()
 
 
-def print_header(model: str, index_name: str, include_private: bool) -> None:
+def _get_username() -> str:
+    """Best-effort: git config user.name → system user."""
+    try:
+        name = subprocess.check_output(
+            ["git", "config", "user.name"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        if name:
+            return name
+    except Exception:
+        pass
+    return getpass.getuser().capitalize()
+
+
+def print_welcome(
+    sessions: list[dict],
+    model: str,
+    embedding_model: str,
+) -> None:
+    """
+    Render the Claude Code-style two-panel welcome box.
+
+    Left panel  — logo, greeting, version, model, license, cwd
+    Right panel — getting-started tips, recent sessions
+    """
     from prompt_toolkit import print_formatted_text
-    bar = _bar()
-    print_formatted_text(
-        FormattedText([("class:bar", bar)]),
-        style=TUI_STYLE,
-    )
-    print_formatted_text(
-        FormattedText([
-            ("class:mode-label", "  MINDVAULT  "),
-            ("class:mode-desc", f"model: {model}  |  index: {index_name}  |  "
-             f"private: {'on' if include_private else 'off'}  |  shift+tab: cycle mode"),
-        ]),
-        style=TUI_STYLE,
-    )
-    print_formatted_text(
-        FormattedText([("class:bar", bar)]),
-        style=TUI_STYLE,
-    )
+    from mindvault.version import CURRENT_VERSION
+
+    cols = shutil.get_terminal_size((120, 24)).columns
+    cols = max(cols, 80)  # minimum sensible width
+
+    # ── Panel dimensions ────────────────────────────────────────
+    LEFT_W = 42   # content chars inside left cell (excluding border/padding)
+    # Row format: │ {left:<LEFT_W} │ {right:<RIGHT_W} │
+    # total cols = 1 + 1 + LEFT_W + 1 + 1 + 1 + RIGHT_W + 1 + 1 = LEFT_W + RIGHT_W + 7
+    RIGHT_W = max(cols - LEFT_W - 7, 20)
+
+    # ── Brain ASCII logo (5 lines, narrow chars only) ───────────
+    LOGO = [
+        "    ▗▄▄▄▄▖    ",
+        "   ▟██████▙   ",
+        "   ▜██████▛   ",
+        "    ▀▄▄▄▄▀    ",
+        "      ▐▌      ",
+    ]
+
+    # ── Left panel lines (content only, no padding/border) ──────
+    name = _get_username()
+    greeting = f"Welcome back, {name}!"
+    left_lines: list[tuple[str, str]] = [
+        ("", ""),
+        ("box-name", greeting.center(LEFT_W)),
+        ("", ""),
+        *[("box-logo", line.center(LEFT_W)) for line in LOGO],
+        ("", ""),
+        ("box-meta",    f"  MindVault v{CURRENT_VERSION}"),
+        ("box-meta",    f"  {model} · {embedding_model}"),
+        ("", ""),
+        ("box-license", "  Personal use — free"),
+        ("box-license", "  Commercial use — contact me"),
+        ("", ""),
+        ("box-meta",    f"  {str(Path.cwd())}"),
+        ("", ""),
+    ]
+
+    # ── Right panel lines ────────────────────────────────────────
+    tip_sep = "─" * (RIGHT_W - 1)
+
+    right_lines: list[tuple[str, str]] = [
+        ("box-tip-head", " Getting started"),
+        ("box-divider",  " " + tip_sep),
+        ("box-tip", " ingest         index your data"),
+        ("box-tip", " chat           start chatting"),
+        ("box-tip", " Shift+Tab      cycle modes"),
+        ("box-tip", " /mode [name]   switch reasoning mode"),
+        ("", ""),
+        ("box-tip-head", " Recent sessions"),
+        ("box-divider",  " " + tip_sep),
+    ]
+
+    if sessions:
+        for s in sessions[:5]:
+            date = s.get("started_at", "")[:10]
+            preview = (s.get("preview") or "")[:RIGHT_W - 16].strip()
+            status = s.get("status", "raw")
+            entry = f" {date}  {preview}"
+            right_lines.append(("box-session", entry[:RIGHT_W - 1]))
+    else:
+        right_lines.append(("box-session", " No recent sessions"))
+
+    # ── Pad to equal height ──────────────────────────────────────
+    n_rows = max(len(left_lines), len(right_lines))
+    while len(left_lines) < n_rows:
+        left_lines.append(("", ""))
+    while len(right_lines) < n_rows:
+        right_lines.append(("", ""))
+
+    # ── Render ────────────────────────────────────────────────────
+    title = f"MindVault v{CURRENT_VERSION}"
+    title_section = f"─── {title} "
+    top_fill = "─" * (cols - 2 - len(title_section))
+    top_border = "╭" + title_section + top_fill + "╮"
+    bot_border = "╰" + "─" * (cols - 2) + "╯"
+
+    ft = FormattedText
+
+    # Top border
+    print_formatted_text(ft([
+        ("class:box-title", "╭─── "),
+        ("class:box-title", title),
+        ("class:box-border", " " + "─" * (cols - 2 - 5 - len(title)) + "╮"),
+    ]), style=TUI_STYLE)
+
+    # Content rows
+    for (lclass, lcontent), (rclass, rcontent) in zip(left_lines, right_lines):
+        # Truncate and pad content to exact widths
+        ltext = (lcontent or "")[:LEFT_W].ljust(LEFT_W)
+        rtext = (rcontent or "")[:RIGHT_W].ljust(RIGHT_W)
+        lclass = lclass or "box-meta"
+        rclass = rclass or "box-meta"
+        print_formatted_text(ft([
+            ("class:box-border", "│ "),
+            (f"class:{lclass}", ltext),
+            ("class:box-border", " │ "),
+            (f"class:{rclass}", rtext),
+            ("class:box-border", " │"),
+        ]), style=TUI_STYLE)
+
+    # Bottom border
+    print_formatted_text(ft([
+        ("class:box-border", bot_border),
+    ]), style=TUI_STYLE)
+    print()
 
 
 # ─── Input session ─────────────────────────────────────────────────────────────

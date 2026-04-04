@@ -44,9 +44,10 @@ from mindvault.config import (
     QDRANT_PATH,
     SESSIONS_DIR,
 )
+
 from mindvault.council import run_council
 from mindvault.modes import Mode, get_config
-from mindvault.tui import BrainPrompt, print_bar, print_header, print_mode_switch, print_response, print_thinking
+from mindvault.tui import BrainPrompt, print_bar, print_welcome, print_mode_switch, print_response, print_thinking
 from mindvault.version import fetch_in_background
 from src.ingestion.store import COLLECTION_PUBLIC, COLLECTION_PRIVATE
 from src.llm import compress_session
@@ -175,13 +176,11 @@ def run_chat(
 
     prompt_ui = BrainPrompt(on_mode_change=on_mode_change)
 
-    # ── Print header ───────────────────────────────────────────────────────────
-    print_header(
-        model=LLM_MODEL,
-        index_name=QDRANT_PATH.name,
-        include_private=include_private,
-    )
-    print("\nStart asking. Shift+Tab cycles modes. /quit to exit.\n")
+    # ── Welcome box ────────────────────────────────────────────────────────────
+    from src.sessions.manager import list_sessions
+    recent = list_sessions(SESSIONS_DIR)[:5] if SESSIONS_DIR.exists() else []
+    print_welcome(sessions=recent, model=LLM_MODEL, embedding_model=EMBEDDING_MODEL)
+    print("Shift+Tab cycles modes · /quit to exit · /sources for last sources\n")
 
     # ── Core ask function ──────────────────────────────────────────────────────
     def ask(query: str) -> None:
