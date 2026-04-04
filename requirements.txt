@@ -1,3 +1,5 @@
 qdrant-client
 httpx
 python-dotenv
+pypdf
+prompt_toolkit

@@ -17,6 +17,10 @@ Commands during chat:
     /private         — toggle private vault on/off
     /sources         — show sources from last answer
     /remember <fact> — save a specific fact to this session
+    /mode [name]     — print current mode or switch to named mode
+
+Keys:
+    Shift+Tab        — cycle through reasoning modes
 """
 
 import sys
@@ -40,14 +44,16 @@ from mindvault.config import (
     QDRANT_PATH,
     SESSIONS_DIR,
 )
+from mindvault.council import run_council
+from mindvault.modes import Mode, get_config
+from mindvault.tui import BrainPrompt, print_bar, print_header, print_mode_switch, print_response, print_thinking
+from mindvault.version import fetch_in_background
 from src.ingestion.store import COLLECTION_PUBLIC, COLLECTION_PRIVATE
-from src.llm import chat_with_brain, compress_session
+from src.llm import compress_session
 from src.memory.extractor import extract_entities_from_turn, deduplicate_entities
 from src.memory.retriever import retrieve
 from src.memory.store import MemoryStore
 from src.sessions.manager import Session, load_session, load_last_session
-
-SEPARATOR = "─" * 60
 
 
 def embed_query(text: str) -> list[float]:
@@ -61,8 +67,8 @@ def embed_query(text: str) -> list[float]:
 
 
 def format_sources(chunks: list[dict]) -> str:
-    seen = set()
-    lines = []
+    seen: set[str] = set()
+    lines: list[str] = []
     for chunk in chunks:
         title = chunk.get("title", "Unknown")
         date = chunk.get("created_at", "")[:10]
@@ -75,7 +81,6 @@ def format_sources(chunks: list[dict]) -> str:
 
 
 def _process_session_end(session: Session, memory_store: MemoryStore) -> None:
-    """Compress session and store in memory layer at session end."""
     if not session.turns:
         session.save_and_index()
         return
@@ -104,10 +109,10 @@ def _process_session_end(session: Session, memory_store: MemoryStore) -> None:
         memory_store.store_entities(deduped, source_id=session.session_id)
     session.entities = deduped
     session.status = "processed"
-
     session.save_and_index()
+
     preview = summary[:80] if summary else "none"
-    print(f"[Session saved. {len(deduped)} entities captured. Preview: {preview}...]")
+    print(f"[Session saved. {len(deduped)} entities captured. Preview: {preview}...]\n")
 
 
 def run_chat(
@@ -115,7 +120,10 @@ def run_chat(
     resume_session_id: str | None = None,
     resume_last: bool = False,
 ) -> None:
-    # Check Ollama
+    # ── Version check (non-blocking) ──────────────────────────────────────────
+    fetch_in_background()
+
+    # ── Preflight ──────────────────────────────────────────────────────────────
     try:
         httpx.get(f"{OLLAMA_BASE}/api/tags", timeout=5.0).raise_for_status()
     except httpx.HTTPError:
@@ -138,7 +146,7 @@ def run_chat(
     last_chunks: list[dict] = []
     session_entities: list[dict] = []
 
-    # Load or create session
+    # ── Session setup ──────────────────────────────────────────────────────────
     session: Session | None = None
     if not single_query:
         if resume_session_id:
@@ -152,7 +160,6 @@ def run_chat(
         elif resume_last:
             session = load_last_session(SESSIONS_DIR)
             if not session:
-                print("No previous sessions found. Starting new session.")
                 session = Session(SESSIONS_DIR, model=LLM_MODEL)
             else:
                 history = [{"role": t["role"], "content": t["content"]} for t in session.turns]
@@ -161,21 +168,36 @@ def run_chat(
         else:
             session = Session(SESSIONS_DIR, model=LLM_MODEL)
 
-    print(f"\n{SEPARATOR}")
-    print("  MINDVAULT CHAT")
-    print(f"  Model: {LLM_MODEL}  |  Index: {QDRANT_PATH.name}")
-    print(f"  Private vault: {'included' if include_private else 'excluded'} (/private to toggle)")
-    print(f"  Commands: /quit  /clear  /private  /sources  /remember <fact>")
-    print(SEPARATOR)
+    # ── Build prompt UI ────────────────────────────────────────────────────────
+    def on_mode_change(mode: Mode) -> None:
+        config = get_config(mode)
+        print_mode_switch(config)
 
+    prompt_ui = BrainPrompt(on_mode_change=on_mode_change)
+
+    # ── Print header ───────────────────────────────────────────────────────────
+    print_header(
+        model=LLM_MODEL,
+        index_name=QDRANT_PATH.name,
+        include_private=include_private,
+    )
+    print("\nStart asking. Shift+Tab cycles modes. /quit to exit.\n")
+
+    # ── Core ask function ──────────────────────────────────────────────────────
     def ask(query: str) -> None:
         nonlocal last_chunks, session_entities
+
+        mode = prompt_ui.mode
+        config = get_config(mode)
 
         try:
             vector = embed_query(query)
         except Exception as e:
-            print(f"\n[Error embedding query: {e}]")
+            print(f"\n[Error embedding query: {e}]\n")
             return
+
+        # EXPLORE mode: enable graph link expansion
+        expand_links = mode == Mode.EXPLORE
 
         chunks = retrieve(
             query_vector=vector,
@@ -185,31 +207,45 @@ def run_chat(
             compressed_collection=COLLECTION_COMPRESSED_PUBLIC,
             top_k=CHAT_TOP_K,
             compressed_threshold=COMPRESSED_SCORE_THRESHOLD,
+            expand_links=expand_links,
         )
         last_chunks = chunks
 
         if not chunks:
-            print("\nBrain: Nothing relevant found for that query.")
+            print_response("Brain", "Nothing relevant found in your brain for that query.")
             return
 
-        response = chat_with_brain(
+        # Show thinking lines for council modes
+        if mode in (Mode.PLAN, Mode.DECIDE, Mode.DEBATE, Mode.REFLECT, Mode.EXPLORE):
+            from mindvault.council import COUNCIL
+            members_by_mode = {
+                Mode.PLAN: ["The Analyst", "The Pragmatist", "The Devil"],
+                Mode.DECIDE: [m.name for m in COUNCIL],
+                Mode.DEBATE: ["The Visionary", "The Devil", "The Analyst"],
+                Mode.REFLECT: ["The Historian", "The Visionary", "The Analyst"],
+                Mode.EXPLORE: ["The Visionary", "The Historian", "The Pragmatist"],
+            }
+            for name in members_by_mode.get(mode, []):
+                print_thinking(name)
+
+        response = run_council(
+            mode=mode,
             query=query,
-            context_chunks=chunks,
+            chunks=chunks,
             model=LLM_MODEL,
             base_url=OLLAMA_BASE,
-            conversation_history=history,
+            history=history if mode == Mode.CHAT else None,
         )
 
         if response:
-            print(f"\nBrain: {response}\n")
+            print_bar()
+            print_response(f"Brain [{config.label}]", response)
             history.append({"role": "user", "content": query})
             history.append({"role": "assistant", "content": response})
 
             if session:
                 session.add_turn("user", query)
                 session.add_turn("assistant", response)
-
-                # Streaming entity extraction per turn
                 turn_entities = extract_entities_from_turn(
                     user_turn=query,
                     assistant_turn=response,
@@ -219,21 +255,20 @@ def run_chat(
                 session_entities.extend(turn_entities)
                 session.entities = session_entities
         else:
-            print("\nBrain: [LLM did not respond — check if Ollama is running]\n")
+            print("\n[LLM did not respond — check if Ollama is running]\n")
 
-    # Single-query mode (no session saved)
+    # ── Single-query mode ──────────────────────────────────────────────────────
     if single_query:
-        print(f"\nYou: {single_query}")
         ask(single_query)
         return
 
-    # Interactive REPL
-    print("\nStart asking. Your brain is ready.\n")
+    # ── Interactive REPL ───────────────────────────────────────────────────────
     while True:
-        try:
-            user_input = input("You: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nExiting.")
+        user_input = prompt_ui.ask()
+
+        # None = user quit via Ctrl+C / Ctrl+D
+        if user_input is None:
+            print("\nEnding session.")
             if session:
                 _process_session_end(session, memory_store)
             break
@@ -241,6 +276,7 @@ def run_chat(
         if not user_input:
             continue
 
+        # ── Slash commands ─────────────────────────────────────────────────────
         if user_input.lower() in ("/quit", "/exit"):
             print("Ending session.")
             if session:
@@ -271,6 +307,22 @@ def run_chat(
                 session_entities.append({"type": "fact", "name": fact_text, "value": ""})
                 session.entities = session_entities
                 print(f"[Remembered: {fact_text}]\n")
+            continue
+
+        if user_input.lower().startswith("/mode"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) == 1:
+                config = get_config(prompt_ui.mode)
+                print(f"[Current mode: {config.icon} {config.label} — {config.description}]\n")
+            else:
+                target = parts[1].strip().upper()
+                try:
+                    new_mode = Mode(target)
+                    prompt_ui.current_mode = new_mode
+                    on_mode_change(new_mode)
+                except ValueError:
+                    valid = ", ".join(m.value for m in Mode)
+                    print(f"[Unknown mode '{target}'. Valid: {valid}]\n")
             continue
 
         ask(user_input)

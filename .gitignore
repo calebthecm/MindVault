@@ -40,9 +40,6 @@ data-*/
 
 # Internal / dev-only
 CLAUDE.md
-docs/superpowers/
-
-# Internal / dev-only
-CLAUDE.md
-docs/superpowers/
+docs/
 tests/
+sessions/

@@ -16,6 +16,7 @@ class SourceType(str, Enum):
     ANTHROPIC_PROJECT = "anthropic_project"
     OPENAI_CONVERSATION = "openai_conversation"
     OBSIDIAN_NOTE = "obsidian_note"
+    PDF_DOCUMENT = "pdf_document"
 
 
 class VaultName(str, Enum):

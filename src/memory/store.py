@@ -169,3 +169,79 @@ class MemoryStore:
                 "SELECT importance FROM memory_importance WHERE chunk_id = ?", (chunk_id,)
             ).fetchone()
         return row[0] if row else 0.5
+
+    # ── Memory links ──────────────────────────────────────────────────────────
+
+    def store_links(self, links: list[dict]) -> int:
+        """
+        Insert links between source IDs. Each link: {from_id, to_id, link_type, strength}.
+        Skips duplicates (same from_id + to_id + link_type).
+        Returns count of new links inserted.
+        """
+        inserted = 0
+        with sqlite3.connect(self.db_path) as conn:
+            for link in links:
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO memory_links (id, from_id, to_id, link_type, strength)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (
+                        str(uuid.uuid4()),
+                        link["from_id"],
+                        link["to_id"],
+                        link["link_type"],
+                        link.get("strength", 1.0),
+                    ))
+                    inserted += conn.execute("SELECT changes()").fetchone()[0]
+                except sqlite3.Error as e:
+                    logger.warning(f"Failed to insert link: {e}")
+        return inserted
+
+    def get_links_for_source(
+        self,
+        source_id: str,
+        link_type: Optional[str] = None,
+        min_strength: float = 0.0,
+    ) -> list[dict]:
+        """Return all sources linked to source_id (in either direction)."""
+        with sqlite3.connect(self.db_path) as conn:
+            if link_type:
+                rows = conn.execute("""
+                    SELECT to_id AS linked_id, link_type, strength FROM memory_links
+                    WHERE from_id = ? AND link_type = ? AND strength >= ?
+                    UNION
+                    SELECT from_id AS linked_id, link_type, strength FROM memory_links
+                    WHERE to_id = ? AND link_type = ? AND strength >= ?
+                """, (source_id, link_type, min_strength, source_id, link_type, min_strength)).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT to_id AS linked_id, link_type, strength FROM memory_links
+                    WHERE from_id = ? AND strength >= ?
+                    UNION
+                    SELECT from_id AS linked_id, link_type, strength FROM memory_links
+                    WHERE to_id = ? AND strength >= ?
+                """, (source_id, min_strength, source_id, min_strength)).fetchall()
+        return [{"linked_id": r[0], "link_type": r[1], "strength": r[2]} for r in rows]
+
+    def get_entity_source_map(self) -> dict[str, list[str]]:
+        """Return {normalized_entity_name: [source_ids]} for all entities."""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT lower(name), source_id FROM memory_entities"
+            ).fetchall()
+        result: dict[str, list[str]] = {}
+        for name, source_id in rows:
+            result.setdefault(name, []).append(source_id)
+        return result
+
+    def delete_compressed(self, compressed_id: str, collection: str) -> None:
+        """Remove a compressed memory from SQLite and Qdrant."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM memory_compressed WHERE id = ?", (compressed_id,))
+        try:
+            self.qdrant.delete(
+                collection_name=collection,
+                points_selector=[compressed_id],
+            )
+        except Exception as e:
+            logger.warning(f"Failed to delete Qdrant point {compressed_id}: {e}")

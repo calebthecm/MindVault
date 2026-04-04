@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from math import exp
 
-from src.models import Chunk, Document, SourceType
+from src.models import Chunk, Document, SourceType  # PDF_DOCUMENT added to SourceType
 
 # Stable namespace UUID for deterministic chunk ID generation
 _CHUNK_NS = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
@@ -154,14 +154,117 @@ def _chunk_by_paragraphs(doc: Document, half_life_days: int = 180) -> list[Chunk
     return chunks
 
 
+def _chunk_by_headings(doc: Document) -> list[Chunk]:
+    """
+    Split Obsidian notes at heading boundaries (h1/h2/h3).
+    Each section (heading + body until next heading) becomes one chunk.
+    Falls back to paragraph splitting within sections that are too long.
+    """
+    now = datetime.now(timezone.utc)
+    days_old = max(0, (now - doc.updated_at).days)
+    freshness = exp(-0.693 * days_old / 365)  # notes: 365-day half-life
+
+    # Strip YAML frontmatter
+    body = doc.body
+    if body.startswith("---"):
+        end = body.find("\n---", 3)
+        if end != -1:
+            body = body[end + 4:].lstrip("\n")
+
+    # Split on headings (keep delimiter with each section)
+    sections = re.split(r"(?m)(?=^#{1,3} )", body)
+    sections = [s.strip() for s in sections if s.strip()]
+
+    if not sections:
+        return _chunk_by_paragraphs(doc, half_life_days=365)
+
+    chunks = []
+    index = 0
+    for section in sections:
+        # If section is too long, paragraph-split it
+        if len(section) > MAX_PARA_CHARS:
+            sub_texts = _split_at_paragraphs(section, MAX_PARA_CHARS, OVERLAP_CHARS)
+        else:
+            sub_texts = [section]
+
+        for text in sub_texts:
+            if not text.strip():
+                continue
+            chunks.append(Chunk(
+                id=_chunk_id(doc.id, index),
+                document_id=doc.id,
+                source_type=doc.source_type,
+                vault=doc.vault,
+                privacy_level=doc.privacy_level,
+                text=text,
+                index=index,
+                created_at=doc.created_at,
+                updated_at=doc.updated_at,
+                freshness_score=freshness,
+                title=doc.title,
+                note_path=doc.note_path,
+                metadata=doc.metadata,
+            ))
+            index += 1
+
+    return chunks or _chunk_by_paragraphs(doc, half_life_days=365)
+
+
+def _chunk_pdf(doc: Document) -> list[Chunk]:
+    """
+    Split PDF documents by page (each [Page N] block is one chunk).
+    Pages that are too long get paragraph-split within the page.
+    """
+    now = datetime.now(timezone.utc)
+    days_old = max(0, (now - doc.updated_at).days)
+    freshness = exp(-0.693 * days_old / 365)
+
+    page_blocks = re.split(r"\n\n(?=\[Page \d+\]\n)", doc.body)
+    chunks = []
+    index = 0
+
+    for block in page_blocks:
+        block = block.strip()
+        if not block:
+            continue
+
+        if len(block) > MAX_PARA_CHARS:
+            sub_texts = _split_at_paragraphs(block, MAX_PARA_CHARS, OVERLAP_CHARS)
+        else:
+            sub_texts = [block]
+
+        for text in sub_texts:
+            if not text.strip():
+                continue
+            chunks.append(Chunk(
+                id=_chunk_id(doc.id, index),
+                document_id=doc.id,
+                source_type=doc.source_type,
+                vault=doc.vault,
+                privacy_level=doc.privacy_level,
+                text=text,
+                index=index,
+                created_at=doc.created_at,
+                updated_at=doc.updated_at,
+                freshness_score=freshness,
+                title=doc.title,
+                metadata=doc.metadata,
+            ))
+            index += 1
+
+    return chunks or _chunk_by_paragraphs(doc, half_life_days=365)
+
+
 def chunk_document(doc: Document) -> list[Chunk]:
     """Dispatch to the right chunking strategy based on source type."""
     if doc.source_type == SourceType.ANTHROPIC_CONVERSATION:
         chunks = _chunk_conversation(doc)
     elif doc.source_type == SourceType.OBSIDIAN_NOTE:
-        chunks = _chunk_by_paragraphs(doc, half_life_days=365)
+        chunks = _chunk_by_headings(doc)
+    elif doc.source_type == SourceType.PDF_DOCUMENT:
+        chunks = _chunk_pdf(doc)
     else:
-        # memories, projects
+        # memories, projects, generic
         chunks = _chunk_by_paragraphs(doc, half_life_days=180)
 
     logger.debug(f"Chunked '{doc.title}' → {len(chunks)} chunks")

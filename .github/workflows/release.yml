@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Bump version and update Vercel
+    runs-on: ubuntu-latest
+
+    env:
+      VERCEL_TEAM_ID: team_QAE5ga7OtDYmKbKPm4vl2L6p
+      VERCEL_PROJECT_ID: prj_7lpR7zCyAMofnAbwQCQ3cKZrb12l
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need push access to commit the version bump back to main
+          token: ${{ secrets.GH_PAT }}
+          ref: main
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          # Strip the leading "v" from the tag name (v0.4.0 → 0.4.0)
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing version: $VERSION"
+
+      - name: Bump CURRENT_VERSION in version.py
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          sed -i "s/^CURRENT_VERSION = .*/CURRENT_VERSION = \"$VERSION\"/" mindvault/version.py
+          echo "Updated version.py:"
+          grep CURRENT_VERSION mindvault/version.py
+
+      - name: Commit and push version bump
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add mindvault/version.py
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore: bump version to $VERSION"
+          git push origin main
+
+      - name: Update APP_VERSION on Vercel
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TOKEN="${{ secrets.VERCEL_TOKEN }}"
+
+          echo "Fetching existing APP_VERSION env var ID..."
+          ENV_LIST=$(curl -sf \
+            "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env?teamId=${VERCEL_TEAM_ID}" \
+            -H "Authorization: Bearer $TOKEN")
+
+          ENV_ID=$(echo "$ENV_LIST" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for e in data.get('envs', []):
+              if e.get('key') == 'APP_VERSION':
+                  print(e['id'])
+                  break
+          ")
+
+          if [ -z "$ENV_ID" ]; then
+            echo "APP_VERSION not found — creating it..."
+            curl -sf -X POST \
+              "https://api.vercel.com/v10/projects/${VERCEL_PROJECT_ID}/env?teamId=${VERCEL_TEAM_ID}" \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"key\":\"APP_VERSION\",\"value\":\"$VERSION\",\"type\":\"plain\",\"target\":[\"production\",\"preview\"]}"
+          else
+            echo "Updating APP_VERSION ($ENV_ID) to $VERSION..."
+            curl -sf -X PATCH \
+              "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env/${ENV_ID}?teamId=${VERCEL_TEAM_ID}" \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"value\":\"$VERSION\"}"
+          fi
+
+          echo "Vercel env updated."
+
+      - name: Trigger Vercel redeploy
+        run: |
+          TOKEN="${{ secrets.VERCEL_TOKEN }}"
+
+          # Get the latest deployment for this project
+          LATEST=$(curl -sf \
+            "https://api.vercel.com/v6/deployments?projectId=${VERCEL_PROJECT_ID}&teamId=${VERCEL_TEAM_ID}&limit=1" \
+            -H "Authorization: Bearer $TOKEN")
+
+          DEPLOY_ID=$(echo "$LATEST" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          deps = data.get('deployments', [])
+          if deps: print(deps[0]['uid'])
+          ")
+
+          if [ -z "$DEPLOY_ID" ]; then
+            echo "No existing deployment found — Vercel will deploy on next git push."
+            exit 0
+          fi
+
+          echo "Redeploying $DEPLOY_ID with new env..."
+          curl -sf -X POST \
+            "https://api.vercel.com/v13/deployments?teamId=${VERCEL_TEAM_ID}&forceNew=1" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\":\"mind-vault-api\",\"deploymentId\":\"$DEPLOY_ID\"}"
+
+          echo "Redeploy triggered."
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
