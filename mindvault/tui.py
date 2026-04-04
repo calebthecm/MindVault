@@ -185,7 +185,9 @@ def print_welcome(
     from mindvault.version import CURRENT_VERSION, release_label
 
     # ── Terminal geometry ────────────────────────────────────────
-    cols = max(shutil.get_terminal_size((120, 24)).columns, 80)
+    # Cap at 160 — beyond that the two-panel layout looks too sparse
+    MAX_BOX_COLS = 160
+    cols = min(max(shutil.get_terminal_size((120, 24)).columns, 80), MAX_BOX_COLS)
 
     # Row format: │ {left:<LEFT_W} │ {right:<RIGHT_W} │
     # Border chars per row: "│ " + " │ " + " │" = 7

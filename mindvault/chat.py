@@ -16,6 +16,7 @@ Commands during chat:
     /clear           — clear conversation history
     /private         — toggle private vault on/off
     /sources         — show sources from last answer
+    /resume          — interactive session picker (arrow keys + Enter)
     /remember <fact> — save a specific fact to this session
     /mode [name]     — print current mode or switch to named mode
 
@@ -196,7 +197,7 @@ def run_chat(
         embedding_model=EMBEDDING_MODEL,
         work_dir=str(QDRANT_PATH.parent),
     )
-    print("Shift+Tab cycles modes · /quit to exit · /sources for last sources\n")
+    print("Shift+Tab cycles modes · /resume to switch sessions · /quit to exit\n")
 
     # ── Core ask function ──────────────────────────────────────────────────────
     def ask(query: str) -> None:
@@ -314,6 +315,34 @@ def run_chat(
                 print(f"\nSources from last answer:\n{format_sources(last_chunks)}\n")
             else:
                 print("[No previous query]\n")
+            continue
+
+        if user_input.lower() == "/resume":
+            from mindvault.session_picker import pick_session
+            all_sessions = list_sessions(SESSIONS_DIR) if SESSIONS_DIR.exists() else []
+            if not all_sessions:
+                print("[No sessions found]\n")
+                continue
+            # Save current session state before potentially switching
+            if session and session.turns:
+                session.save_and_index()
+            chosen = pick_session(all_sessions)
+            if chosen is None:
+                print("[Cancelled]\n")
+                continue
+            loaded = load_session(SESSIONS_DIR, chosen["session_id"])
+            if not loaded:
+                print(f"[Could not load session {chosen['session_id'][:12]}...]\n")
+                continue
+            # Swap current session for the resumed one
+            session = loaded
+            history.clear()
+            history.extend(
+                {"role": t["role"], "content": t["content"]} for t in session.turns
+            )
+            session_entities = list(session.entities)
+            date = session.started_at[:19].replace("T", " ")
+            print(f"\n[Resumed session from {date}. {len(session.turns)} turns loaded.]\n")
             continue
 
         if user_input.lower().startswith("/remember "):
