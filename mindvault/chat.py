@@ -51,6 +51,8 @@ from mindvault.config import (
     QDRANT_PATH,
     SESSIONS_DIR,
     SUGGEST_FOLLOWUPS,
+    WEB_SEARCH_AUTO_THRESHOLD,
+    WEB_SEARCH_MAX_RESULTS,
     WRITE_SESSIONS_TO_VAULT,
 )
 
@@ -333,6 +335,19 @@ def run_chat(
             chunks = combined[:CHAT_TOP_K]
         last_chunks = chunks
 
+        # Auto web search when memory is weak or empty
+        web_used = False
+        if WEB_SEARCH_AUTO_THRESHOLD > 0:
+            top_score = max((c["score"] for c in chunks), default=0.0)
+            if top_score < WEB_SEARCH_AUTO_THRESHOLD:
+                from src.adapters.web import web_search
+                web_chunks = web_search(embed_text, max_results=WEB_SEARCH_MAX_RESULTS)
+                if web_chunks:
+                    chunks = web_chunks + chunks
+                    last_chunks = chunks
+                    web_used = True
+                    print(f"  [Low memory confidence ({top_score:.2f}) — searching the web...]\n")
+
         if not chunks:
             print_response("Brain", "Nothing relevant found in your brain for that query.")
             return
@@ -453,7 +468,8 @@ def run_chat(
         if user_input.lower() in ("/help", "/?"):
             print("""
 Commands:
-  /search <term>   search without LLM — shows scored results
+  /web <query>     search the web (DuckDuckGo, no API needed)
+  /search <term>   search memory without LLM — shows scored results
   /note <text>     quick-capture a note (indexed on next ingest)
   /forget <topic>  suppress matching chunks from future retrieval
   /sources         show sources from last answer
@@ -626,6 +642,42 @@ Commands:
                 chunk_ids.append(c["chunk_id"])
             memory_store.suppress_chunks(chunk_ids)
             print(f"[Done — these will no longer surface in chat or search]\n")
+            continue
+
+        if user_input.lower().startswith("/web "):
+            web_query = user_input[5:].strip()
+            if not web_query:
+                print("[Usage: /web <query>]\n")
+                continue
+            # Force web search and feed results to the LLM — bypass memory entirely
+            from src.adapters.web import web_search as _web_search
+            print(f"  [Searching the web for: {web_query}]\n")
+            web_chunks = _web_search(web_query, max_results=WEB_SEARCH_MAX_RESULTS)
+            if not web_chunks:
+                print("[No web results found — check your internet connection]\n")
+                continue
+            # Reuse ask() logic but inject web chunks directly
+            from mindvault.modes import get_config as _get_config
+            _mode = prompt_ui.mode
+            _config = _get_config(_mode)
+            anim = BakingAnimation()
+            anim.start()
+            response = run_council(
+                mode=_mode,
+                query=web_query,
+                chunks=web_chunks,
+                model=LLM_MODEL,
+                base_url=OLLAMA_BASE,
+                history=history if _mode == Mode.CHAT else None,
+            )
+            elapsed = anim.stop()
+            if response:
+                print_bar()
+                print(f"✻ Baked for {elapsed:.1f}s  [web]")
+                print_markdown_response(f"Brain [{_config.label}]", response)
+                history.append({"role": "user", "content": web_query})
+                history.append({"role": "assistant", "content": response})
+                last_chunks = web_chunks
             continue
 
         ask(user_input)

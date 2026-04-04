@@ -4,3 +4,5 @@ python-dotenv
 pypdf
 prompt_toolkit
 rich
+duckduckgo-search
+trafilatura

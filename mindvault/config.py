@@ -111,6 +111,12 @@ SUGGEST_FOLLOWUPS = True
 # Whether to write a session summary note back to the Obsidian vault on session end
 WRITE_SESSIONS_TO_VAULT = True  # opt-in — set to True to enable
 
+# Auto-trigger web search when best memory score is below this threshold (0 = off)
+WEB_SEARCH_AUTO_THRESHOLD = 0.45
+
+# Max web search results to include in context
+WEB_SEARCH_MAX_RESULTS = 5
+
 # ─── Memory layers ────────────────────────────────────────────────────────────
 
 # Max characters of context sent to LLM per query (summaries preferred)

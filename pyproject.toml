@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mindvault"
+version = "0.5.2"
+description = "Local-first second brain RAG system — chat with your own data"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Source-Available — see LICENSE" }
+authors = [{ name = "Caleb", email = "caleb@calebmedia.co" }]
+
+dependencies = [
+    "qdrant-client",
+    "httpx",
+    "python-dotenv",
+    "pypdf",
+    "prompt_toolkit",
+    "rich",
+    "duckduckgo-search",
+    "trafilatura",
+]
+
+[project.scripts]
+# After `pip install -e .` this makes `mindvault` available as a shell command
+mindvault = "mindvault._cli:main"
+
+[tool.hatch.build.targets.wheel]
+# Include both the mindvault package and src (needed until src/ is folded in)
+packages = ["mindvault", "src"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "mindvault/",
+    "src/",
+    "requirements.txt",
+    "README.md",
+]
