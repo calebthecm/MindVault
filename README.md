@@ -8,11 +8,12 @@ Everything runs on your machine. No data leaves.
 
 ## What it does
 
-- **Ingests** Anthropic conversation exports, Obsidian vaults, and PDFs
+- **Ingests** Anthropic conversation exports, Obsidian vaults, PDFs, and plain text files
 - **Indexes** content into a multi-layer memory system (raw → compressed → structured → linked)
 - **Remembers** entities, decisions, and goals extracted from every chat
 - **Retrieves** using hybrid scoring — summaries first, raw text only when needed
 - **Chats** interactively with six reasoning modes powered by a council of AI voices
+- **Searches the web** automatically when your memory doesn't have a confident answer
 - **Saves sessions** — resume any previous conversation exactly where you left off
 
 ---
@@ -36,26 +37,55 @@ ollama serve                   # start Ollama if not running
 git clone https://github.com/calebthecm/MindVault
 cd MindVault
 python -m venv .venv && source .venv/bin/activate
+pip install -e .               # installs deps + registers the mindvault CLI
+```
+
+Or without the CLI shortcut:
+
+```bash
 pip install -r requirements.txt
 ```
 
 ### First run
 
 ```bash
-python mindvault.py setup      # configure models and create folders
+mindvault setup                # or: python -m mindvault setup
 ```
 
 ### Add your data
 
-Drop your Anthropic export folder into the project directory (any folder starting with `data-`). PDFs go anywhere — point the ingester at them manually.
+Drop your Anthropic export folder into the project directory (any folder starting with `data-`). PDFs and `.txt`/`.md` files go anywhere — point the ingester at them manually.
 
-- **Anthropic:** `claude.ai → Settings → Export Data`
+- **Anthropic export:** `claude.ai → Settings → Export Data`
 
 ### Index and chat
 
 ```bash
-python mindvault.py ingest     # index everything
-python mindvault.py chat       # start talking to your brain
+mindvault ingest               # index everything
+mindvault chat                 # start talking to your brain
+```
+
+---
+
+## Running MindVault
+
+Three equivalent ways to run it — use whichever you prefer:
+
+```bash
+# After pip install -e . (recommended)
+mindvault
+mindvault chat
+mindvault ingest
+
+# As a Python module (no install needed)
+python -m mindvault
+python -m mindvault chat
+python -m mindvault ingest
+
+# Legacy script (still works)
+python mindvault.py
+python mindvault.py chat
+python mindvault.py ingest
 ```
 
 ---
@@ -63,30 +93,57 @@ python mindvault.py chat       # start talking to your brain
 ## Commands
 
 ```
-python mindvault.py                         # chat (default)
-python mindvault.py chat                    # interactive REPL
-python mindvault.py chat --resume           # resume last session
-python mindvault.py chat --resume <id>      # resume specific session
-python mindvault.py ingest                  # auto-discover and index all exports
-python mindvault.py ingest ./folder/        # index a specific folder
-python mindvault.py ingest --force          # re-index even if already processed
-python mindvault.py notes                   # regenerate Obsidian notes
-python mindvault.py setup                   # first-run configuration wizard
-python mindvault.py stats                   # show index and session statistics
-python mindvault.py sessions                # list resumable sessions
+mindvault                           chat (default)
+mindvault chat                      interactive REPL
+mindvault chat --resume             resume last session
+mindvault chat --resume <id>        resume specific session
+mindvault ingest                    auto-discover and index all exports
+mindvault ingest ./folder/          index a specific folder
+mindvault ingest --force            re-index even if already processed
+mindvault notes                     regenerate Obsidian notes
+mindvault setup                     first-run configuration wizard
+mindvault stats                     show index and session statistics
+mindvault sessions                  list resumable sessions
+mindvault consolidate               merge near-duplicate memories
 ```
 
 **During a chat session:**
 
 ```
-Shift+Tab          cycle reasoning mode
-/mode [name]       show or switch mode (CHAT, PLAN, DECIDE, DEBATE, REFLECT, EXPLORE)
-/quit, /exit       end session (compresses and saves automatically)
-/clear             clear conversation history
-/private           toggle private vault inclusion
-/sources           show which memories were used in the last answer
-/remember <fact>   immediately save a fact to this session
+Shift+Tab            cycle reasoning mode
+/help                show all commands
+/web <query>         search the web (DuckDuckGo, no API key needed)
+/search <term>       search memory without LLM — shows scored results
+/note <text>         quick-capture a note (indexed on next ingest)
+/forget <topic>      suppress matching chunks from future retrieval
+/mode [name]         show or switch mode (CHAT, PLAN, DECIDE, DEBATE, REFLECT, EXPLORE)
+/sources             show which memories were used in the last answer
+/remember <fact>     save a fact to this session
+/private             toggle private vault inclusion
+/resume              interactive session picker
+/clear               clear conversation history
+/quit, /exit         end session (compresses and saves automatically)
 ```
+
+---
+
+## Web search
+
+MindVault searches the web automatically when memory confidence is low, or on demand:
+
+```
+/web what is the current price of ETH?
+/web latest news on local SEO in 2025
+```
+
+Uses DuckDuckGo — no API key, no Docker, no setup. Configure in `config.py`:
+
+```python
+WEB_SEARCH_AUTO_THRESHOLD = 0.45   # auto-search when best memory score is below this
+WEB_SEARCH_MAX_RESULTS    = 5      # results to include in context
+```
+
+Set `WEB_SEARCH_AUTO_THRESHOLD = 0` to disable auto-search.
 
 ---
 
@@ -125,6 +182,7 @@ The council is five internal voices with distinct personalities:
 | Compressed | LLM-generated summaries per session/document | Primary retrieval context |
 | Structured | Extracted entities (persons, projects, decisions, goals) | Entity-boosted retrieval |
 | Linked | Relationships between memories via shared entities + wikilinks | Graph traversal in EXPLORE mode |
+| Web | Live DuckDuckGo results | Augments memory for current/unknown topics |
 
 ### Retrieval scoring
 
@@ -139,10 +197,10 @@ Compressed summaries are searched first. Raw chunks are only fetched when confid
 
 ### Session lifecycle
 
-1. **During chat:** turns saved live + entities extracted per exchange
+1. **During chat:** turns saved live + entities extracted per exchange (background)
 2. **On exit:** LLM compresses the session into a 2–4 sentence summary
 3. **Summary embedded** and stored in the compressed memory layer
-4. **Resume anytime** with `--resume`
+4. **Resume anytime** with `--resume` or `/resume` during chat
 
 ---
 
@@ -156,7 +214,9 @@ All settings in `mindvault/config.py`:
 | `EMBEDDING_MODEL` | `nomic-embed-text` | Vector search embeddings |
 | `CHAT_TOP_K` | `8` | Chunks retrieved per query |
 | `COMPRESSED_SCORE_THRESHOLD` | `0.75` | Below this, also fetch raw chunks |
-| `MAX_CONTEXT_CHARS` | `3000` | Max context sent to LLM per query |
+| `WEB_SEARCH_AUTO_THRESHOLD` | `0.45` | Auto web search below this memory score (0 = off) |
+| `SUGGEST_FOLLOWUPS` | `True` | Suggest follow-up questions after each answer |
+| `WRITE_SESSIONS_TO_VAULT` | `True` | Write session summary notes to Obsidian on exit |
 | `CHAT_INCLUDE_PRIVATE` | `False` | Include private vault by default |
 
 ---
@@ -168,6 +228,7 @@ All settings in `mindvault/config.py`:
 | `brain.db` | SQLite: ingestion tracking, entities, links, importance scores |
 | `.qdrant/` | Qdrant: vector index (raw + compressed collections) |
 | `sessions/` | Compressed chat sessions (`.json.gz`) |
+| `notes/` | Quick-captured notes via `/note` (indexed on next ingest) |
 | `My Brain/` | Obsidian vault — business, projects, general knowledge |
 | `Private Brain/` | Obsidian vault — personal content (separate collection) |
 | `data-*/` | Export folders (excluded from git) |
@@ -177,6 +238,7 @@ All settings in `mindvault/config.py`:
 ## Privacy
 
 - All processing is local by default.
+- Web search uses DuckDuckGo's anonymous API — no account, no tracking.
 - `My Brain` and `Private Brain` are in **separate Qdrant collections** — private content is never implicitly included in responses.
 - `.gitignore` excludes all personal data: vaults, exports, sessions, databases.
 
@@ -185,9 +247,12 @@ All settings in `mindvault/config.py`:
 ## Requirements
 
 ```
-qdrant-client
-httpx
-python-dotenv
-pypdf
-prompt_toolkit
+qdrant-client       vector database
+httpx               HTTP client (LLM + web requests)
+python-dotenv       .env file loading
+pypdf               PDF ingestion
+prompt_toolkit      TUI and interactive input
+rich                markdown rendering in terminal
+duckduckgo-search   web search (no API key)
+trafilatura         web page content extraction
 ```
