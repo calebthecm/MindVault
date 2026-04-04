@@ -132,12 +132,12 @@ jobs:
             exit 0
           fi
 
-          echo "Redeploying $DEPLOY_ID with updated env..."
+          echo "Redeploying $DEPLOY_ID to production with updated env..."
           RESULT=$(curl -s -X POST \
             "https://api.vercel.com/v13/deployments?teamId=${VERCEL_TEAM_ID}&forceNew=1" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"name\":\"mind-vault-api\",\"deploymentId\":\"$DEPLOY_ID\"}")
+            -d "{\"name\":\"mind-vault-api\",\"deploymentId\":\"$DEPLOY_ID\",\"target\":\"production\"}")
           echo "Redeploy result: $RESULT"
 
       - name: Create GitHub Release
