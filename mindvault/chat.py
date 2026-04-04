@@ -33,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import threading
+from datetime import datetime, timezone
 
 import httpx
 from qdrant_client import QdrantClient
@@ -49,6 +50,8 @@ from mindvault.config import (
     OLLAMA_BASE,
     QDRANT_PATH,
     SESSIONS_DIR,
+    SUGGEST_FOLLOWUPS,
+    WRITE_SESSIONS_TO_VAULT,
 )
 
 from mindvault.council import run_council
@@ -73,6 +76,14 @@ def embed_query(text: str) -> list[float]:
     return resp.json()["embeddings"][0]
 
 
+def _confidence_label(score: float) -> str:
+    if score >= 0.8:
+        return "HIGH"
+    if score >= 0.6:
+        return "MED"
+    return "LOW"
+
+
 def format_sources(chunks: list[dict]) -> str:
     seen: set[str] = set()
     lines: list[str] = []
@@ -81,9 +92,10 @@ def format_sources(chunks: list[dict]) -> str:
         date = chunk.get("created_at", "")[:10]
         score = chunk.get("score", 0)
         layer = chunk.get("layer", "raw")
+        conf = _confidence_label(score)
         if title not in seen:
             seen.add(title)
-            lines.append(f"  - {title} ({date}) [score: {score}, layer: {layer}]")
+            lines.append(f"  [{conf}] {title} ({date}) [{layer}]")
     return "\n".join(lines) if lines else "  (none)"
 
 
@@ -137,6 +149,30 @@ def _process_session_end(session: Session, memory_store: MemoryStore) -> None:
     session.entities = deduped
     session.status = "processed"
     session.save_and_index()
+
+    # Optionally write summary back to Obsidian vault
+    if summary and WRITE_SESSIONS_TO_VAULT:
+        try:
+            from mindvault.config import VAULT_MY_BRAIN
+            vault_sessions = VAULT_MY_BRAIN / "MindVault Sessions"
+            vault_sessions.mkdir(parents=True, exist_ok=True)
+            date_str = session.started_at[:10]
+            note_path = vault_sessions / f"{date_str} Session.md"
+            tags = " ".join(
+                f"#{e['name'].replace(' ', '-')}"
+                for e in deduped[:5]
+                if e.get("name")
+            )
+            content = f"# Session {date_str}\n\n{summary}\n\n{tags}\n"
+            # Append if multiple sessions on same day
+            if note_path.exists():
+                content = "\n---\n\n" + content
+                note_path.write_text(note_path.read_text() + content)
+            else:
+                note_path.write_text(content)
+            print(f"  [Wrote session note to My Brain/MindVault Sessions/{note_path.name}]")
+        except Exception as e:
+            print(f"  [Warning: could not write vault note: {e}]")
 
     preview = summary[:80] if summary else "none"
     print(f"[Session saved. {len(deduped)} entities captured. Preview: {preview}...]\n")
@@ -240,8 +276,16 @@ def run_chat(
         mode = prompt_ui.mode
         config = get_config(mode)
 
+        # Parse time filter before embedding so the model sees a clean query
+        from src.memory.time_filter import parse_time_filter
+        embed_text, date_after, date_before = parse_time_filter(query)
+        if date_after:
+            after_str = date_after.strftime("%Y-%m-%d")
+            before_str = (date_before or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+            print(f"  [Time filter: {after_str} → {before_str}]\n")
+
         try:
-            vector = embed_query(query)
+            vector = embed_query(embed_text)
         except Exception as e:
             print(f"\n[Error embedding query: {e}]\n")
             return
@@ -258,6 +302,8 @@ def run_chat(
             top_k=CHAT_TOP_K,
             compressed_threshold=COMPRESSED_SCORE_THRESHOLD,
             expand_links=expand_links,
+            date_after=date_after,
+            date_before=date_before,
         )
         if include_private:
             from src.ingestion.store import COLLECTION_PRIVATE
@@ -270,6 +316,8 @@ def run_chat(
                 top_k=CHAT_TOP_K,
                 compressed_threshold=COMPRESSED_SCORE_THRESHOLD,
                 expand_links=expand_links,
+                date_after=date_after,
+                date_before=date_before,
             )
             combined = chunks + private_chunks
             combined.sort(key=lambda c: c["score"], reverse=True)
@@ -352,6 +400,22 @@ def run_chat(
                         session.entities = session_entities
 
                 threading.Thread(target=_extract_bg, daemon=True).start()
+
+            # Follow-up suggestions (CHAT mode only, background thread)
+            if mode == Mode.CHAT and SUGGEST_FOLLOWUPS:
+                _rq, _rr = query, response
+                def _suggest_bg(q=_rq, r=_rr) -> None:
+                    from src.llm import suggest_followups
+                    suggestions = suggest_followups(q, r, model=LLM_MODEL, base_url=OLLAMA_BASE)
+                    if suggestions:
+                        from prompt_toolkit.patch_stdout import run_in_terminal
+                        def _print_suggestions() -> None:
+                            print("  Related:")
+                            for s in suggestions:
+                                print(f"    · {s}")
+                            print()
+                        run_in_terminal(_print_suggestions)
+                threading.Thread(target=_suggest_bg, daemon=True).start()
         else:
             print("\n[LLM did not respond — check if Ollama is running]\n")
 

@@ -430,6 +430,40 @@ Answer using your memories above:"""
     return _call_ollama(prompt, model=model, system=system, base_url=base_url, timeout=120.0)
 
 
+# ─── Follow-up suggestions ───────────────────────────────────────────────────
+
+def suggest_followups(
+    query: str,
+    response: str,
+    model: str = "llama3.2",
+    base_url: str = "http://localhost:11434",
+) -> list[str]:
+    """
+    Given a Q&A exchange, return 2-3 short follow-up questions the user might want to ask.
+    Returns [] on failure or if nothing meaningful suggested.
+    """
+    prompt = f"""Given this Q&A from a personal second brain chat, suggest 2-3 short follow-up questions.
+
+Q: {query[:400]}
+A: {response[:400]}
+
+Rules:
+- Each question under 12 words
+- Make them specific, not generic ("tell me more")
+- Return ONLY a JSON array of strings, e.g. ["...", "...", "..."]
+- Return [] if no natural follow-ups exist
+
+JSON array:"""
+
+    result = _call_ollama(prompt, model=model, base_url=base_url, timeout=30.0)
+    if not result:
+        return []
+    parsed = _extract_json(result)
+    if not isinstance(parsed, list):
+        return []
+    return [str(q) for q in parsed if isinstance(q, str) and q.strip()][:3]
+
+
 # ─── Session compression ──────────────────────────────────────────────────────
 
 def compress_session(

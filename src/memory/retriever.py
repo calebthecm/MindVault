@@ -15,7 +15,7 @@ Retrieval order:
 import logging
 from datetime import datetime, timezone
 from math import exp
-from typing import Optional
+from typing import Optional, Tuple
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchAny
@@ -154,6 +154,8 @@ def retrieve(
     compressed_threshold: float = 0.75,
     query_entities: Optional[list[str]] = None,
     expand_links: bool = True,
+    date_after: Optional[datetime] = None,
+    date_before: Optional[datetime] = None,
 ) -> list[dict]:
     """
     Hybrid retrieval: compressed-first, raw fallback, graph expansion.
@@ -172,6 +174,8 @@ def retrieve(
     query_entities = query_entities or []
     chunks: list[dict] = []
     suppressed = memory_store.get_suppressed_ids()
+    # Fetch extra results when date filtering is active — many will be filtered out
+    fetch_k = top_k * 4 if (date_after or date_before) else top_k
 
     # --- Pre-fetch entity source IDs for query entity matching ---
     entity_source_ids: set[str] = set()
@@ -183,7 +187,7 @@ def retrieve(
     compressed_hits = qdrant.query_points(
         collection_name=compressed_collection,
         query=query_vector,
-        limit=top_k,
+        limit=fetch_k,
         with_payload=True,
     ).points
 
@@ -214,7 +218,7 @@ def retrieve(
         raw_hits = qdrant.query_points(
             collection_name=raw_collection,
             query=query_vector,
-            limit=max(top_k // 2, 4),
+            limit=max(fetch_k // 2, 4),
             with_payload=True,
         ).points
 
@@ -272,7 +276,26 @@ def retrieve(
             chunks.extend(linked_chunks)
             logger.debug(f"Graph expansion added {len(linked_chunks)} linked chunks")
 
-    # --- Step 4: Deduplicate by source, filter suppressed, rank ---
+    # --- Step 4a: Filter by date range if requested ---
+    if date_after or date_before:
+        date_filtered = []
+        for chunk in chunks:
+            raw_dt = chunk.get("created_at", "")
+            if not raw_dt:
+                date_filtered.append(chunk)  # keep if no date
+                continue
+            try:
+                dt = datetime.fromisoformat(raw_dt.replace("Z", "+00:00"))
+                if date_after and dt < date_after:
+                    continue
+                if date_before and dt > date_before:
+                    continue
+                date_filtered.append(chunk)
+            except Exception:
+                date_filtered.append(chunk)
+        chunks = date_filtered
+
+    # --- Step 4b: Deduplicate by source, filter suppressed, rank ---
     seen_sources_final: set[str] = set()
     result: list[dict] = []
     for chunk in sorted(chunks, key=lambda c: c["score"], reverse=True):

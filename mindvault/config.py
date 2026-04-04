@@ -103,6 +103,14 @@ CHAT_INCLUDE_PRIVATE = False
 # Directory where chat sessions are stored as compressed JSON
 SESSIONS_DIR = BRAIN_DIR / "sessions"
 
+# ─── Features ────────────────────────────────────────────────────────────────
+
+# Whether to suggest follow-up questions after each CHAT response (background LLM call)
+SUGGEST_FOLLOWUPS = True
+
+# Whether to write a session summary note back to the Obsidian vault on session end
+WRITE_SESSIONS_TO_VAULT = False  # opt-in — set to True to enable
+
 # ─── Memory layers ────────────────────────────────────────────────────────────
 
 # Max characters of context sent to LLM per query (summaries preferred)
