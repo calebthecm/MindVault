@@ -1,8 +1,11 @@
 """
-Embedder: calls Ollama's embedding API to produce vectors for Chunks.
+Embedder: generates embedding vectors for Chunks.
 
-Uses nomic-embed-text by default (768 dimensions, good quality/speed tradeoff).
-Falls back gracefully with clear error messages if Ollama is unavailable.
+Supports:
+  - Ollama /api/embed  (nomic-embed-text, mxbai-embed-large, etc.)
+  - OpenAI-compatible /embeddings  (text-embedding-3-small, etc.)
+
+Backend is read from mindvault.config at call time.
 """
 
 import logging
@@ -15,29 +18,27 @@ from src.models import Chunk
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_BASE = "http://localhost:11434"
-DEFAULT_MODEL = "nomic-embed-text"
-BATCH_SIZE = 32         # Chunks per Ollama request
+BATCH_SIZE = 32
 RETRY_ATTEMPTS = 3
-RETRY_DELAY = 2.0       # seconds
+RETRY_DELAY = 2.0
 
 
-def _embed_batch(texts: list[str], model: str, client: httpx.Client) -> list[list[float]]:
-    """Call Ollama /api/embed for a batch of texts. Returns list of embedding vectors."""
+def _embed_batch_ollama(
+    texts: list[str],
+    model: str,
+    base_url: str,
+    client: httpx.Client,
+) -> list[list[float]]:
+    """Call Ollama /api/embed for a batch of texts."""
     payload = {"model": model, "input": texts}
     for attempt in range(RETRY_ATTEMPTS):
         try:
-            response = client.post(
-                f"{OLLAMA_BASE}/api/embed",
-                json=payload,
-                timeout=60.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["embeddings"]
+            resp = client.post(f"{base_url}/api/embed", json=payload, timeout=60.0)
+            resp.raise_for_status()
+            return resp.json()["embeddings"]
         except httpx.HTTPError as e:
             if attempt < RETRY_ATTEMPTS - 1:
-                logger.warning(f"Embed attempt {attempt + 1} failed: {e}. Retrying in {RETRY_DELAY}s...")
+                logger.warning(f"Embed attempt {attempt + 1} failed: {e}. Retrying...")
                 time.sleep(RETRY_DELAY)
             else:
                 raise RuntimeError(
@@ -47,28 +48,68 @@ def _embed_batch(texts: list[str], model: str, client: httpx.Client) -> list[lis
                 ) from e
 
 
+def _embed_batch_openai(
+    texts: list[str],
+    model: str,
+    base_url: str,
+    api_key: str,
+    client: httpx.Client,
+) -> list[list[float]]:
+    """Call OpenAI-compatible /embeddings endpoint."""
+    payload = {"model": model, "input": texts}
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    for attempt in range(RETRY_ATTEMPTS):
+        try:
+            resp = client.post(
+                f"{base_url}/embeddings",
+                json=payload,
+                headers=headers,
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            # Sort by index to preserve order
+            items = sorted(data["data"], key=lambda x: x["index"])
+            return [item["embedding"] for item in items]
+        except (httpx.HTTPError, KeyError) as e:
+            if attempt < RETRY_ATTEMPTS - 1:
+                logger.warning(f"Embed attempt {attempt + 1} failed: {e}. Retrying...")
+                time.sleep(RETRY_DELAY)
+            else:
+                raise RuntimeError(
+                    f"OpenAI embedding failed after {RETRY_ATTEMPTS} attempts: {e}"
+                ) from e
+
+
 def embed_chunks(
     chunks: list[Chunk],
-    model: str = DEFAULT_MODEL,
+    model: Optional[str] = None,
     batch_size: int = BATCH_SIZE,
 ) -> list[tuple[Chunk, list[float]]]:
     """
-    Embed a list of Chunks.
+    Embed a list of Chunks using the configured backend.
     Returns list of (chunk, embedding_vector) pairs in the same order as input.
     """
     if not chunks:
         return []
 
+    from mindvault.config import EMBEDDING_MODEL, OLLAMA_BASE, LLM_BACKEND, LLM_API_KEY
+    if model is None:
+        model = EMBEDDING_MODEL
+    backend = LLM_BACKEND
+    base_url = OLLAMA_BASE
+    api_key = LLM_API_KEY
+
     results: list[tuple[Chunk, list[float]]] = []
 
     with httpx.Client() as client:
-        # Verify Ollama is reachable
-        try:
-            client.get(f"{OLLAMA_BASE}/api/tags", timeout=5.0).raise_for_status()
-        except httpx.HTTPError as e:
-            raise RuntimeError(
-                "Cannot reach Ollama at localhost:11434. Start Ollama with `ollama serve`."
-            ) from e
+        if backend == "ollama":
+            try:
+                client.get(f"{base_url}/api/tags", timeout=5.0).raise_for_status()
+            except httpx.HTTPError as e:
+                raise RuntimeError(
+                    f"Cannot reach Ollama at {base_url}. Start with `ollama serve`."
+                ) from e
 
         total = len(chunks)
         for batch_start in range(0, total, batch_size):
@@ -81,7 +122,10 @@ def embed_chunks(
                 f"({len(texts)} chunks)..."
             )
 
-            vectors = _embed_batch(texts, model, client)
+            if backend == "ollama":
+                vectors = _embed_batch_ollama(texts, model, base_url, client)
+            else:
+                vectors = _embed_batch_openai(texts, model, base_url, api_key, client)
 
             if len(vectors) != len(batch):
                 raise RuntimeError(

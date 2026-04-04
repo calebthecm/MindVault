@@ -5,7 +5,15 @@ Edit this file to change where data lives, which models to use,
 or how aggressively the system categorizes and discovers topics.
 """
 
+import os
 from pathlib import Path
+
+# Load .env from the Brain root (API keys live there, not in code)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass
 
 # ─── Directory layout ─────────────────────────────────────────────────────────
 
@@ -28,15 +36,23 @@ EXCLUDED_DIRS = {
 
 # ─── Models ───────────────────────────────────────────────────────────────────
 
-# Ollama base URL
+# LLM backend: "ollama" for local Ollama, "openai" for OpenAI-compatible APIs
+LLM_BACKEND = "ollama"
+
+# Base URL for the LLM backend
+# Ollama default: http://localhost:11434
+# OpenAI: https://api.openai.com/v1
 OLLAMA_BASE = "http://localhost:11434"
+
+# API key for OpenAI-compatible backends — set LLM_API_KEY in .env
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 
 # Model used for: summarizing conversations, deciding categories, chat interface
 LLM_MODEL = "llama3.2"
 
 # Model used for: generating embeddings (vector search)
 EMBEDDING_MODEL = "nomic-embed-text"
-EMBEDDING_DIM = 768  # nomic-embed-text output dimension
+EMBEDDING_DIM = 768  # nomic-embed-text output dimension; OpenAI text-embedding-3-small = 1536
 
 # ─── Ingestion settings ───────────────────────────────────────────────────────
 

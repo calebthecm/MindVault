@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from config import BRAIN_DIR, EXCLUDED_DIRS, LLM_MODEL, OLLAMA_BASE
+from mindvault.config import BRAIN_DIR, EXCLUDED_DIRS, LLM_MODEL, OLLAMA_BASE
 from src.llm import detect_export_format
 from src.models import Document, PrivacyLevel, SourceType, VaultName
 

@@ -1,14 +1,16 @@
 """
-src/llm.py — Ollama wrapper for llama3.2.
+src/llm.py — Unified LLM wrapper supporting Ollama and OpenAI-compatible APIs.
 
 Used for:
   - Summarizing conversations into clean Obsidian notes
   - Deciding which category a conversation belongs in
   - Detecting unknown export formats
   - Powering the chat interface (retrieve → synthesize → respond)
+  - Extracting entities from conversation turns
+  - Compressing sessions into dense summaries
 
 All calls are synchronous and include basic retry logic.
-If Ollama is unreachable, functions return None and callers fall back gracefully.
+If the LLM is unreachable, functions return None and callers fall back gracefully.
 """
 
 import json
@@ -25,6 +27,65 @@ RETRY_ATTEMPTS = 2
 RETRY_DELAY = 1.5
 
 
+def _call_llm(
+    prompt: str,
+    model: str,
+    system: Optional[str] = None,
+    base_url: str = "http://localhost:11434",
+    api_key: str = "",
+    backend: str = "ollama",
+    timeout: float = 120.0,
+) -> Optional[str]:
+    """
+    Unified LLM call supporting Ollama and OpenAI-compatible APIs.
+
+    backend="ollama"  → POST {base_url}/api/generate
+    backend="openai"  → POST {base_url}/chat/completions  (OpenAI, Groq, LM Studio, vLLM, etc.)
+
+    Returns the response text, or None if the call fails.
+    """
+    for attempt in range(RETRY_ATTEMPTS):
+        try:
+            if backend == "ollama":
+                payload: dict = {"model": model, "prompt": prompt, "stream": False}
+                if system:
+                    payload["system"] = system
+                resp = httpx.post(
+                    f"{base_url}/api/generate",
+                    json=payload,
+                    timeout=timeout,
+                )
+                resp.raise_for_status()
+                return resp.json().get("response", "").strip()
+
+            else:
+                # OpenAI-compatible chat/completions
+                messages = []
+                if system:
+                    messages.append({"role": "system", "content": system})
+                messages.append({"role": "user", "content": prompt})
+                payload = {"model": model, "messages": messages, "stream": False}
+                headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+                resp = httpx.post(
+                    f"{base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=timeout,
+                )
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"].strip()
+
+        except (httpx.HTTPError, KeyError, IndexError) as e:
+            if attempt < RETRY_ATTEMPTS - 1:
+                logger.warning(f"LLM call attempt {attempt + 1} failed: {e}. Retrying...")
+                time.sleep(RETRY_DELAY)
+            else:
+                logger.error(f"LLM call failed after {RETRY_ATTEMPTS} attempts: {e}")
+                return None
+
+    return None
+
+
 def _call_ollama(
     prompt: str,
     model: str,
@@ -33,50 +94,31 @@ def _call_ollama(
     timeout: float = 120.0,
 ) -> Optional[str]:
     """
-    Call Ollama's /api/generate endpoint.
-    Returns the response text, or None if the call fails.
+    Backward-compatible wrapper. Dispatches to _call_llm using config backend.
+    Existing callers (extractor, etc.) automatically pick up the configured backend.
     """
-    payload: dict = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-    }
-    if system:
-        payload["system"] = system
-
-    for attempt in range(RETRY_ATTEMPTS):
-        try:
-            resp = httpx.post(
-                f"{base_url}/api/generate",
-                json=payload,
-                timeout=timeout,
-            )
-            resp.raise_for_status()
-            return resp.json().get("response", "").strip()
-        except httpx.HTTPError as e:
-            if attempt < RETRY_ATTEMPTS - 1:
-                logger.warning(f"LLM call attempt {attempt + 1} failed: {e}. Retrying...")
-                time.sleep(RETRY_DELAY)
-            else:
-                logger.error(f"LLM call failed after {RETRY_ATTEMPTS} attempts: {e}")
-                return None
+    try:
+        from mindvault.config import LLM_BACKEND, LLM_API_KEY
+        backend = LLM_BACKEND
+        api_key = LLM_API_KEY
+    except ImportError:
+        backend = "ollama"
+        api_key = ""
+    return _call_llm(prompt, model, system, base_url, api_key, backend, timeout)
 
 
 def _extract_json(text: str) -> Optional[dict | list]:
     """Pull JSON out of an LLM response that may have surrounding prose."""
-    # Try direct parse first
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    # Try to find a JSON block
     match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\}|\[[\s\S]*?\])\s*```", text)
     if match:
         try:
             return json.loads(match.group(1))
         except json.JSONDecodeError:
             pass
-    # Try to find raw JSON object or array
     match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
     if match:
         try:
@@ -96,11 +138,8 @@ def summarize_conversation(
     max_chars: int = 4000,
 ) -> Optional[str]:
     """
-    Use llama3.2 to write a clean, dense knowledge note from a conversation.
-
+    Write a clean, dense knowledge note from a conversation.
     Returns Markdown-formatted note content, or None if LLM unavailable.
-    The note is written in second person ("You explored...", "You built...")
-    so it reads as a personal memory when retrieved later.
     """
     truncated = transcript[:max_chars]
     if len(transcript) > max_chars:
@@ -145,14 +184,14 @@ def categorize_conversations(
     base_url: str = "http://localhost:11434",
 ) -> Optional[dict[str, dict]]:
     """
-    Pass all conversation titles + summaries to llama3.2 at once.
-    Ask it to decide: folder name, tags, and whether any new categories are needed.
+    Pass all conversation titles + summaries to the LLM at once and ask it to
+    assign a folder name and tags to each one.
+
+    Batching all conversations in one call is intentional — the model sees the
+    full picture and makes consistent grouping decisions instead of treating each
+    conversation in isolation.
 
     Returns {uuid: {"category": str, "tags": [str]}} or None if LLM unavailable.
-
-    Batching all conversations in one call is intentional — it lets the model
-    see the full picture and make consistent grouping decisions, rather than
-    categorizing each conversation in isolation.
     """
     items = []
     for c in conversations:
@@ -188,7 +227,7 @@ Respond ONLY with a JSON object mapping each UUID to its category and tags:
 
     parsed = _extract_json(result)
     if not isinstance(parsed, dict):
-        logger.warning("LLM categorization returned unexpected format, falling back to keywords")
+        logger.warning("LLM categorization returned unexpected format")
         return None
 
     return parsed
@@ -203,14 +242,10 @@ def detect_export_format(
     base_url: str = "http://localhost:11434",
 ) -> Optional[dict]:
     """
-    Given a directory's file list and JSON previews, use llama3.2 to identify
+    Given a directory's file list and JSON previews, use the LLM to identify
     the export format and describe how to extract conversations from it.
 
     Returns a dict describing the format, or None if detection fails.
-
-    This is what allows the system to handle OpenAI exports, Gemini exports,
-    or any other format without hardcoded parsers — the LLM reads the structure
-    and explains it.
     """
     prompt = f"""You are analyzing an AI conversation export directory to understand its data format.
 
@@ -224,7 +259,7 @@ Identify the format and describe how to extract conversations. Respond ONLY as J
 {{
   "source": "anthropic | openai | gemini | unknown",
   "conversations_file": "filename.json",
-  "conversations_path": "$.conversations" or "top-level array" etc,
+  "conversations_path": "$.conversations or top-level array etc",
   "title_field": "field name for conversation title",
   "messages_field": "field name for messages array",
   "message_text_field": "field name or path for message text content",
@@ -254,14 +289,10 @@ def chat_with_brain(
     conversation_history: Optional[list[dict]] = None,
 ) -> Optional[str]:
     """
-    Use llama3.2 to answer a query using retrieved context chunks.
+    Answer a query using retrieved context chunks.
 
     context_chunks: list of dicts with keys: text, title, source_type, created_at
     conversation_history: list of {"role": "user"|"assistant", "content": str}
-                          for multi-turn conversation support
-
-    The model is instructed to answer AS the user's second brain — drawing
-    only on the retrieved context and speaking from the user's own perspective.
     """
     if not context_chunks:
         context_text = "No relevant memories found in your brain for this query."
@@ -274,10 +305,9 @@ def chat_with_brain(
             parts.append(f"[Memory {i}] Source: {source} ({date})\n{text}")
         context_text = "\n\n---\n\n".join(parts)
 
-    # Build conversation history string if multi-turn
     history_text = ""
     if conversation_history:
-        for turn in conversation_history[-6:]:  # last 3 exchanges
+        for turn in conversation_history[-6:]:
             role = "You" if turn["role"] == "user" else "Brain"
             history_text += f"{role}: {turn['content']}\n"
 

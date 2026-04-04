@@ -38,44 +38,11 @@ VAULT_DIR = VAULT_MY_BRAIN
 GRAPH_JSON = VAULT_DIR / ".obsidian" / "graph.json"
 
 
-# ─── Keyword category rules (fallback when LLM is off or unavailable) ─────────
-
-CATEGORY_RULES: list[tuple[list[str], str, list[str]]] = [
-    (["privacy policy", "gdpr", "ccpa", "legal", "contract", "agreement", "terms of service"],
-     "Legal", ["legal"]),
-    (["pricing", "pitch", "client", "invoice", "package", "service package",
-      "proposal", "press release", "quote", "booking", "gallery"],
-     "Business & Agency", ["business", "agency"]),
-    (["website", "landing page", "web build", "seo", "cleaning service", "hvac", "dental",
-      "lawn", "handyman", "plumbing", "local business", "home-service", "trades"],
-     "Business & Agency", ["business", "agency", "web"]),
-    (["n8n", "automation", "agent", "prospector", "notion", "skill", "skill-creator",
-      "agent-maker", "pipeline", "deploy", "vercel", "github", "auto-deploy",
-      "deduplicat", "workflow", "prompt template"],
-     "Automation & Tools", ["automation", "tools"]),
-    (["dashboard", "supabase", "swift", "flask", "react", "discord", "stripe", "api",
-      "database", "scheduling app", "ticket bot", "podcast site", "yt-dlp",
-      "email filter", "notification", "secure"],
-     "Development", ["dev", "coding"]),
-    (["quadratic", "factoring", "compound interest", "math", "homework",
-      "right-of-way", "traffic", "word search", "how does", "what is", "explain"],
-     "Learning", ["learning"]),
-    (["faith", "scripture", "spiritual", "music", "healing",
-      "game", "twitch", "youtube", "personal", "memory update",
-      "memory review", "main chat"],
-     "Personal", ["personal"]),
-]
-
-FALLBACK_CATEGORY = "Personal"
+FALLBACK_CATEGORY = "General"
 FALLBACK_TAGS = ["general"]
 
-
-def _keyword_categorize(title: str, summary: str) -> tuple[str, list[str]]:
-    combined = (title + " " + summary).lower()
-    for keywords, category, tags in CATEGORY_RULES:
-        if any(kw in combined for kw in keywords):
-            return category, tags
-    return FALLBACK_CATEGORY, FALLBACK_TAGS
+# Used by category_discovery.py to know which categories already exist
+CATEGORY_RULES: list = []
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -343,13 +310,13 @@ def generate_notes(vault: Path = VAULT_DIR) -> int:
         uuid = convo["uuid"]
         name = convo.get("name", "Untitled")
 
-        # Get category
+        # Get category from LLM result, fall back to General
         if llm_categories and uuid in llm_categories:
             cat_data = llm_categories[uuid]
             category = cat_data.get("category", FALLBACK_CATEGORY)
             tags = cat_data.get("tags", FALLBACK_TAGS)
         else:
-            category, tags = _keyword_categorize(name, convo.get("summary", ""))
+            category, tags = FALLBACK_CATEGORY, FALLBACK_TAGS
 
         # Get LLM summary (or None for raw transcript)
         llm_summary = None
@@ -371,7 +338,8 @@ def generate_notes(vault: Path = VAULT_DIR) -> int:
         conversation_notes.append((name, path, category))
 
     # ── Category discovery ────────────────────────────────────────────────────
-    existing_names = {cat for _, cat, _ in CATEGORY_RULES} | {FALLBACK_CATEGORY}
+    # Collect category names already assigned to conversations
+    existing_names = {cat for _, _, cat in conversation_notes} | {FALLBACK_CATEGORY}
     new_categories = discover_categories(
         conversations=all_conversations,
         category_rules=CATEGORY_RULES,

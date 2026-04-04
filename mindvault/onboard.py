@@ -214,8 +214,8 @@ def select_model_backend() -> tuple[str, str, str, str]:
         base_url = ask("API base URL (OpenAI-compatible)", "https://api.openai.com/v1")
         llm = ask("LLM model name", "gpt-4o-mini")
         embed = ask("Embedding model name", "text-embedding-3-small")
-        warn("OpenAI-compatible mode: set your API key in .env as OPENAI_API_KEY=...")
-        _write_env_template({"OPENAI_API_KEY": ""})
+        warn("OpenAI-compatible mode: set your API key in .env as LLM_API_KEY=sk-...")
+        _write_env_template({"LLM_API_KEY": ""})
         return "openai", base_url, llm, embed
 
     else:
@@ -238,18 +238,22 @@ def _write_env_template(keys: dict[str, str]) -> None:
 # ─── Step 4: Patch config.py ──────────────────────────────────────────────────
 
 
-def patch_config(ollama_base: str, llm_model: str, embedding_model: str) -> None:
-    """Update OLLAMA_BASE, LLM_MODEL, EMBEDDING_MODEL in config.py in-place."""
+def patch_config(backend: str, ollama_base: str, llm_model: str, embedding_model: str) -> None:
+    """Update LLM_BACKEND, OLLAMA_BASE, LLM_MODEL, EMBEDDING_MODEL in config.py in-place."""
     header("Step 4 — Writing config")
 
     if not CONFIG_PATH.exists():
         warn("config.py not found — skipping config patch")
-        info("Set OLLAMA_BASE, LLM_MODEL, and EMBEDDING_MODEL manually.")
+        info("Set LLM_BACKEND, OLLAMA_BASE, LLM_MODEL, and EMBEDDING_MODEL manually.")
         return
 
     text = CONFIG_PATH.read_text()
 
+    # Map backend choice to config value
+    backend_value = "ollama" if backend == "ollama" else "openai"
+
     replacements = {
+        "LLM_BACKEND": f'LLM_BACKEND = "{backend_value}"',
         "OLLAMA_BASE": f'OLLAMA_BASE = "{ollama_base}"',
         "LLM_MODEL": f'LLM_MODEL = "{llm_model}"',
         "EMBEDDING_MODEL": f'EMBEDDING_MODEL = "{embedding_model}"',
@@ -376,9 +380,9 @@ def main() -> None:
     check_python()
     check_dependencies()
 
-    _, ollama_base, llm_model, embedding_model = select_model_backend()
+    backend, ollama_base, llm_model, embedding_model = select_model_backend()
 
-    patch_config(ollama_base, llm_model, embedding_model)
+    patch_config(backend, ollama_base, llm_model, embedding_model)
     create_directories()
     create_gitignore()
     print_next_steps()
