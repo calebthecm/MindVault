@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# MindVault storage (never commit your personal data)
+brain.db
+.qdrant/
+*.db
+*.db-shm
+*.db-wal
+
+# Obsidian vaults (personal notes — keep local)
+My Brain/
+Private Brain/
+
+# Export data (may contain sensitive conversation history)
+data-*/
+
+# Environment secrets
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Internal / dev-only
+CLAUDE.md
+docs/superpowers/
+
+# Internal / dev-only
+CLAUDE.md
+docs/superpowers/
+tests/
