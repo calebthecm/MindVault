@@ -82,9 +82,29 @@ def format_sources(chunks: list[dict]) -> str:
     return "\n".join(lines) if lines else "  (none)"
 
 
+def _print_transcript(turns: list[dict], max_turns: int = 20) -> None:
+    """Print prior session turns to screen so the user can read them on resume."""
+    if not turns:
+        return
+    total = len(turns)
+    visible = turns[-max_turns:] if total > max_turns else turns
+    skipped = total - len(visible)
+    print()
+    print_bar()
+    if skipped:
+        print(f"  [... {skipped} earlier turn(s) not shown — use /clear to reset context]\n")
+    for turn in visible:
+        role = turn.get("role", "user")
+        content = turn.get("content", "")
+        label = "You" if role == "user" else "Brain"
+        print_response(label, content)
+    print_bar()
+    print()
+
+
 def _process_session_end(session: Session, memory_store: MemoryStore) -> None:
     if not session.turns:
-        session.save_and_index()
+        # Nothing happened — discard silently, don't pollute the session list
         return
 
     print("\n[Processing session — compressing and extracting memories...]")
@@ -158,7 +178,8 @@ def run_chat(
                 sys.exit(1)
             history = [{"role": t["role"], "content": t["content"]} for t in session.turns]
             session_entities = list(session.entities)
-            print(f"\n[Resumed session from {session.started_at[:19]}. {len(session.turns)} prior turns loaded.]")
+            _print_transcript(session.turns)
+            print(f"[Resumed session from {session.started_at[:19].replace('T', ' ')} — {len(session.turns) // 2} exchange(s)]\n")
         elif resume_last:
             session = load_last_session(SESSIONS_DIR)
             if not session:
@@ -166,7 +187,8 @@ def run_chat(
             else:
                 history = [{"role": t["role"], "content": t["content"]} for t in session.turns]
                 session_entities = list(session.entities)
-                print(f"\n[Resumed last session from {session.started_at[:19]}. {len(session.turns)} prior turns loaded.]")
+                _print_transcript(session.turns)
+                print(f"[Resumed last session from {session.started_at[:19].replace('T', ' ')} — {len(session.turns) // 2} exchange(s)]\n")
         else:
             session = Session(SESSIONS_DIR, model=LLM_MODEL)
 
@@ -371,8 +393,9 @@ def run_chat(
                 {"role": t["role"], "content": t["content"]} for t in session.turns
             )
             session_entities = list(session.entities)
+            _print_transcript(session.turns)
             date = session.started_at[:19].replace("T", " ")
-            print(f"\n[Resumed session from {date}. {len(session.turns)} turns loaded.]\n")
+            print(f"[Resumed session from {date} — {len(session.turns) // 2} exchange(s)]\n")
             continue
 
         if user_input.lower().startswith("/remember "):
