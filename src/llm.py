@@ -80,7 +80,7 @@ def _call_llm(
                 logger.info(f"LLM call attempt {attempt + 1} failed: {e}. Retrying...")
                 time.sleep(RETRY_DELAY)
             else:
-                logger.error(f"LLM call failed after {RETRY_ATTEMPTS} attempts: {e}")
+                logger.info(f"LLM call failed after {RETRY_ATTEMPTS} attempts: {e}")
                 return None
 
     return None

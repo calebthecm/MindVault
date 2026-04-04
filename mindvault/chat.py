@@ -29,6 +29,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import threading
+
 import httpx
 from qdrant_client import QdrantClient
 
@@ -306,14 +308,21 @@ def run_chat(
             if session:
                 session.add_turn("user", query)
                 session.add_turn("assistant", response)
-                turn_entities = extract_entities_from_turn(
-                    user_turn=query,
-                    assistant_turn=response,
-                    model=LLM_MODEL,
-                    base_url=OLLAMA_BASE,
-                )
-                session_entities.extend(turn_entities)
-                session.entities = session_entities
+
+                # Extract entities in the background — don't block the next prompt
+                _q, _a = query, response
+                def _extract_bg(q=_q, a=_a) -> None:
+                    entities = extract_entities_from_turn(
+                        user_turn=q,
+                        assistant_turn=a,
+                        model=LLM_MODEL,
+                        base_url=OLLAMA_BASE,
+                    )
+                    if entities:
+                        session_entities.extend(entities)
+                        session.entities = session_entities
+
+                threading.Thread(target=_extract_bg, daemon=True).start()
         else:
             print("\n[LLM did not respond — check if Ollama is running]\n")
 
