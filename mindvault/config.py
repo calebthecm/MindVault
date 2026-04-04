@@ -8,17 +8,34 @@ or how aggressively the system categorizes and discovers topics.
 import os
 from pathlib import Path
 
-# Load .env from the Brain root (API keys live there, not in code)
-try:
-    from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent.parent / ".env")
-except ImportError:
-    pass
-
 # ─── Directory layout ─────────────────────────────────────────────────────────
 
-# Root of the Brain project (parent of the mindvault/ package)
-BRAIN_DIR = Path(__file__).parent.parent
+# Resolve BRAIN_DIR with three-tier priority:
+#   1. MINDVAULT_DIR env var — explicit override (useful in Docker, CI, etc.)
+#   2. Repo root (parent of this package) — only if data already exists there
+#      (backward compat for users running from a git clone)
+#   3. ~/.mindvault/ — default for pip-installed users
+_pkg_parent = Path(__file__).parent.parent
+_has_existing_data = (_pkg_parent / "brain.db").exists() or (_pkg_parent / ".qdrant").exists()
+
+if "MINDVAULT_DIR" in os.environ:
+    BRAIN_DIR = Path(os.environ["MINDVAULT_DIR"]).expanduser().resolve()
+elif _has_existing_data:
+    BRAIN_DIR = _pkg_parent  # dev/clone install — keep data where it is
+else:
+    BRAIN_DIR = Path.home() / ".mindvault"
+
+BRAIN_DIR.mkdir(parents=True, exist_ok=True)
+
+# Load .env from BRAIN_DIR (API keys live there, not in code)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(BRAIN_DIR / ".env")
+    # Also check repo root for dev installs
+    if _has_existing_data:
+        load_dotenv(_pkg_parent / ".env")
+except ImportError:
+    pass
 
 # Obsidian vaults
 VAULT_MY_BRAIN = BRAIN_DIR / "My Brain"
