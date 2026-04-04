@@ -1,0 +1,85 @@
+name: Update Homebrew formula
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Get tag/version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TARBALL_URL=https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${VERSION}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Download release tarball
+        shell: bash
+        run: |
+          curl -L "$TARBALL_URL" -o source.tar.gz
+
+      - name: Compute SHA256
+        shell: bash
+        run: |
+          SHA256="$(sha256sum source.tar.gz | awk '{print $1}')"
+          echo "SHA256=$SHA256" >> "$GITHUB_ENV"
+
+      - name: Ensure Formula directory exists
+        shell: bash
+        run: mkdir -p Formula
+
+      - name: Write or update formula
+        shell: bash
+        run: |
+          cat > Formula/mindvault.rb <<EOF
+          class Mindvault < Formula
+            include Language::Python::Virtualenv
+
+            desc "Local-first second brain RAG system"
+            homepage "https://github.com/${GITHUB_REPOSITORY}"
+            url "${TARBALL_URL}"
+            sha256 "${SHA256}"
+            license "Proprietary"
+
+            depends_on "python@3.12"
+
+            def install
+              virtualenv_install_with_resources
+            end
+
+            def caveats
+              <<~EOS
+                MindVault also expects Ollama to be installed and running.
+
+                Then run:
+                  ollama pull nomic-embed-text
+                  ollama pull llama3.2
+                  mindvault setup
+              EOS
+            end
+
+            test do
+              system "#{bin}/mindvault", "--help"
+            end
+          end
+          EOF
+
+      - name: Commit updated formula
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/mindvault.rb
+          git diff --cached --quiet && exit 0
+          git commit -m "Update Homebrew formula for ${VERSION}"
+          git push
