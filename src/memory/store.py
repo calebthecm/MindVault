@@ -78,7 +78,8 @@ class MemoryStore:
                     importance REAL DEFAULT 0.5,
                     access_count INTEGER DEFAULT 0,
                     last_accessed TEXT,
-                    reinforcement_count INTEGER DEFAULT 0
+                    reinforcement_count INTEGER DEFAULT 0,
+                    suppressed INTEGER DEFAULT 0
                 );
             """)
 
@@ -187,6 +188,25 @@ class MemoryStore:
                 "SELECT importance FROM memory_importance WHERE chunk_id = ?", (chunk_id,)
             ).fetchone()
         return row[0] if row else 0.5
+
+    def suppress_chunks(self, chunk_ids: list[str]) -> int:
+        """Mark chunks as suppressed so they are excluded from future retrieval."""
+        with sqlite3.connect(self.db_path) as conn:
+            for cid in chunk_ids:
+                conn.execute("""
+                    INSERT INTO memory_importance (chunk_id, suppressed)
+                    VALUES (?, 1)
+                    ON CONFLICT(chunk_id) DO UPDATE SET suppressed = 1
+                """, (cid,))
+        return len(chunk_ids)
+
+    def get_suppressed_ids(self) -> set[str]:
+        """Return set of all suppressed chunk_ids."""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT chunk_id FROM memory_importance WHERE suppressed = 1"
+            ).fetchall()
+        return {r[0] for r in rows}
 
     # ── Memory links ──────────────────────────────────────────────────────────
 

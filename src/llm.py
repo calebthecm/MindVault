@@ -17,7 +17,7 @@ import json
 import logging
 import re
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import httpx
 
@@ -105,6 +105,100 @@ def _call_ollama(
         backend = "ollama"
         api_key = ""
     return _call_llm(prompt, model, system, base_url, api_key, backend, timeout)
+
+
+def stream_ollama(
+    prompt: str,
+    model: str,
+    system: Optional[str] = None,
+    base_url: str = "http://localhost:11434",
+    on_token: Optional[Callable[[str], None]] = None,
+    timeout: float = 180.0,
+) -> str:
+    """
+    Stream an Ollama response token by token.
+
+    Calls on_token(token_str) for each piece of text as it arrives.
+    Returns the full accumulated response string.
+    Falls back to non-streaming _call_ollama on any error.
+    """
+    try:
+        from mindvault.config import LLM_BACKEND, LLM_API_KEY
+        backend = LLM_BACKEND
+        api_key = LLM_API_KEY
+    except ImportError:
+        backend = "ollama"
+        api_key = ""
+
+    full_text = ""
+
+    if backend == "ollama":
+        payload: dict = {"model": model, "prompt": prompt, "stream": True}
+        if system:
+            payload["system"] = system
+        try:
+            with httpx.stream(
+                "POST", f"{base_url}/api/generate", json=payload, timeout=timeout
+            ) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    token = data.get("response", "")
+                    if token:
+                        full_text += token
+                        if on_token:
+                            on_token(token)
+                    if data.get("done"):
+                        break
+            return full_text.strip()
+        except Exception as e:
+            logger.info(f"Streaming failed, falling back to blocking call: {e}")
+            result = _call_ollama(prompt, model=model, system=system, base_url=base_url, timeout=timeout)
+            if result and on_token:
+                on_token(result)
+            return result or ""
+
+    else:
+        # OpenAI-compatible streaming
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        payload = {"model": model, "messages": messages, "stream": True}
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        try:
+            with httpx.stream(
+                "POST", f"{base_url}/chat/completions",
+                json=payload, headers=headers, timeout=timeout,
+            ) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    line = line.strip()
+                    if not line or line == "data: [DONE]":
+                        continue
+                    if line.startswith("data: "):
+                        line = line[6:]
+                    try:
+                        data = json.loads(line)
+                        token = data["choices"][0]["delta"].get("content", "")
+                        if token:
+                            full_text += token
+                            if on_token:
+                                on_token(token)
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
+            return full_text.strip()
+        except Exception as e:
+            logger.info(f"Streaming failed, falling back to blocking call: {e}")
+            result = _call_ollama(prompt, model=model, system=system, base_url=base_url, timeout=timeout)
+            if result and on_token:
+                on_token(result)
+            return result or ""
 
 
 def _extract_json(text: str) -> Optional[dict | list]:
@@ -287,6 +381,7 @@ def chat_with_brain(
     model: str = "llama3.2",
     base_url: str = "http://localhost:11434",
     conversation_history: Optional[list[dict]] = None,
+    on_token: Optional[Callable[[str], None]] = None,
 ) -> Optional[str]:
     """
     Answer a query using retrieved context chunks.
@@ -329,6 +424,9 @@ Question: {query}
 
 Answer using your memories above:"""
 
+    if on_token:
+        result = stream_ollama(prompt, model=model, system=system, base_url=base_url, on_token=on_token)
+        return result or None
     return _call_ollama(prompt, model=model, system=system, base_url=base_url, timeout=120.0)
 
 

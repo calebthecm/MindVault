@@ -19,6 +19,9 @@ Commands during chat:
     /resume          — interactive session picker (arrow keys + Enter)
     /remember <fact> — save a specific fact to this session
     /mode [name]     — print current mode or switch to named mode
+    /search <term>   — keyword search without LLM, shows raw scored results
+    /note <text>     — quick-capture a note (saved to notes/, indexed on next ingest)
+    /forget <topic>  — suppress matching chunks from future chat and search
 
 Keys:
     Shift+Tab        — cycle through reasoning modes
@@ -290,18 +293,44 @@ def run_chat(
             for name in members_by_mode.get(mode, []):
                 print_thinking(name)
 
-        response = run_council(
-            mode=mode,
-            query=query,
-            chunks=chunks,
-            model=LLM_MODEL,
-            base_url=OLLAMA_BASE,
-            history=history if mode == Mode.CHAT else None,
-        )
+        # CHAT mode streams tokens directly — other modes wait for full response
+        if mode == Mode.CHAT:
+            print_bar()
+            from prompt_toolkit import print_formatted_text
+            from prompt_toolkit.formatted_text import FormattedText
+            print_formatted_text(
+                FormattedText([("class:prompt", f"\nBrain [{config.label}]: ")]),
+                style=__import__("mindvault.tui", fromlist=["TUI_STYLE"]).TUI_STYLE,
+                end="",
+            )
+            streamed_tokens: list[str] = []
+            def _on_token(t: str) -> None:
+                print(t, end="", flush=True)
+                streamed_tokens.append(t)
+            response = run_council(
+                mode=mode,
+                query=query,
+                chunks=chunks,
+                model=LLM_MODEL,
+                base_url=OLLAMA_BASE,
+                history=history if mode == Mode.CHAT else None,
+                on_token=_on_token,
+            )
+            print("\n")  # newline after streamed response
+        else:
+            response = run_council(
+                mode=mode,
+                query=query,
+                chunks=chunks,
+                model=LLM_MODEL,
+                base_url=OLLAMA_BASE,
+                history=history if mode == Mode.CHAT else None,
+            )
 
         if response:
-            print_bar()
-            print_response(f"Brain [{config.label}]", response)
+            if mode != Mode.CHAT:
+                print_bar()
+                print_response(f"Brain [{config.label}]", response)
             history.append({"role": "user", "content": query})
             history.append({"role": "assistant", "content": response})
 
@@ -429,6 +458,87 @@ def run_chat(
                 except ValueError:
                     valid = ", ".join(m.value for m in Mode)
                     print(f"[Unknown mode '{target}'. Valid: {valid}]\n")
+            continue
+
+        if user_input.lower().startswith("/search "):
+            term = user_input[8:].strip()
+            if not term:
+                print("[Usage: /search <term>]\n")
+                continue
+            try:
+                vec = embed_query(term)
+            except Exception as e:
+                print(f"[Embed error: {e}]\n")
+                continue
+            results = retrieve(
+                query_vector=vec,
+                qdrant=qdrant,
+                memory_store=memory_store,
+                raw_collection=COLLECTION_PUBLIC,
+                compressed_collection=COLLECTION_COMPRESSED_PUBLIC,
+                top_k=10,
+                compressed_threshold=COMPRESSED_SCORE_THRESHOLD,
+                expand_links=False,
+            )
+            if not results:
+                print("[No results found]\n")
+            else:
+                print(f"\nSearch results for '{term}':")
+                for r in results:
+                    title = r.get("title", "?")
+                    date = r.get("created_at", "")[:10]
+                    score = r.get("score", 0)
+                    layer = r.get("layer", "")
+                    snippet = r.get("text", "")[:120].replace("\n", " ")
+                    print(f"  [{score:.3f}] {title} ({date}) [{layer}]")
+                    print(f"         {snippet}...")
+                print()
+            continue
+
+        if user_input.lower().startswith("/note "):
+            note_text = user_input[6:].strip()
+            if not note_text:
+                print("[Usage: /note <text>]\n")
+                continue
+            from mindvault.config import BRAIN_DIR
+            notes_dir = BRAIN_DIR / "notes"
+            notes_dir.mkdir(exist_ok=True)
+            from datetime import datetime as _dt
+            fname = _dt.now().strftime("%Y-%m-%dT%H-%M-%S") + ".md"
+            (notes_dir / fname).write_text(note_text + "\n")
+            print(f"[Saved to notes/{fname} — run 'ingest' to index it]\n")
+            continue
+
+        if user_input.lower().startswith("/forget "):
+            topic = user_input[8:].strip()
+            if not topic:
+                print("[Usage: /forget <topic>]\n")
+                continue
+            try:
+                vec = embed_query(topic)
+            except Exception as e:
+                print(f"[Embed error: {e}]\n")
+                continue
+            candidates = retrieve(
+                query_vector=vec,
+                qdrant=qdrant,
+                memory_store=memory_store,
+                raw_collection=COLLECTION_PUBLIC,
+                compressed_collection=COLLECTION_COMPRESSED_PUBLIC,
+                top_k=5,
+                compressed_threshold=COMPRESSED_SCORE_THRESHOLD,
+                expand_links=False,
+            )
+            if not candidates:
+                print("[Nothing found to forget]\n")
+                continue
+            print(f"\nSuppressing {len(candidates)} result(s) for '{topic}':")
+            chunk_ids = []
+            for c in candidates:
+                print(f"  - {c.get('title', '?')} ({c.get('created_at', '')[:10]})")
+                chunk_ids.append(c["chunk_id"])
+            memory_store.suppress_chunks(chunk_ids)
+            print(f"[Done — these will no longer surface in chat or search]\n")
             continue
 
         ask(user_input)

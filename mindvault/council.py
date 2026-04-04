@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from mindvault.modes import Mode
 
@@ -172,6 +172,7 @@ def run_chat(
     model: str,
     base_url: str,
     history: Optional[list[dict]] = None,
+    on_token: Optional[Callable[[str], None]] = None,
 ) -> Optional[str]:
     """Standard CHAT — council skipped, direct synthesis."""
     from src.llm import chat_with_brain
@@ -181,6 +182,7 @@ def run_chat(
         model=model,
         base_url=base_url,
         conversation_history=history,
+        on_token=on_token,
     )
 
 
@@ -379,10 +381,11 @@ def run_council(
     model: str,
     base_url: str,
     history: Optional[list[dict]] = None,
+    on_token: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Dispatch to the right reasoning loop for the current mode."""
     if mode == Mode.CHAT:
-        return run_chat(query, chunks, model, base_url, history) or ""
+        return run_chat(query, chunks, model, base_url, history, on_token=on_token) or ""
     elif mode == Mode.PLAN:
         return run_plan(query, chunks, model, base_url)
     elif mode == Mode.DECIDE:

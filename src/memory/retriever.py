@@ -171,6 +171,7 @@ def retrieve(
     """
     query_entities = query_entities or []
     chunks: list[dict] = []
+    suppressed = memory_store.get_suppressed_ids()
 
     # --- Pre-fetch entity source IDs for query entity matching ---
     entity_source_ids: set[str] = set()
@@ -271,10 +272,12 @@ def retrieve(
             chunks.extend(linked_chunks)
             logger.debug(f"Graph expansion added {len(linked_chunks)} linked chunks")
 
-    # --- Step 4: Deduplicate by source and rank ---
+    # --- Step 4: Deduplicate by source, filter suppressed, rank ---
     seen_sources_final: set[str] = set()
     result: list[dict] = []
     for chunk in sorted(chunks, key=lambda c: c["score"], reverse=True):
+        if chunk["chunk_id"] in suppressed:
+            continue
         src = chunk["source_id"]
         if src not in seen_sources_final:
             seen_sources_final.add(src)
