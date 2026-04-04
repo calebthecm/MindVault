@@ -30,6 +30,9 @@ data-*/
 .env
 .env.*
 
+# User preferences (local only)
+.mindvault.json
+
 # macOS
 .DS_Store
 

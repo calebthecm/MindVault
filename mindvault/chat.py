@@ -176,10 +176,26 @@ def run_chat(
 
     prompt_ui = BrainPrompt(on_mode_change=on_mode_change)
 
+    # ── First-run name prompt (if not set during onboarding) ──────────────────
+    from mindvault import user_config
+    if not user_config.get_name():
+        print()
+        try:
+            entered = input("  What's your name? (shown in the welcome screen): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            entered = ""
+        if entered:
+            user_config.set_name(entered)
+
     # ── Welcome box ────────────────────────────────────────────────────────────
     from src.sessions.manager import list_sessions
     recent = list_sessions(SESSIONS_DIR)[:5] if SESSIONS_DIR.exists() else []
-    print_welcome(sessions=recent, model=LLM_MODEL, embedding_model=EMBEDDING_MODEL)
+    print_welcome(
+        sessions=recent,
+        model=LLM_MODEL,
+        embedding_model=EMBEDDING_MODEL,
+        work_dir=str(QDRANT_PATH.parent),
+    )
     print("Shift+Tab cycles modes · /quit to exit · /sources for last sources\n")
 
     # ── Core ask function ──────────────────────────────────────────────────────

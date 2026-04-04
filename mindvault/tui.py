@@ -141,7 +141,19 @@ def print_response(label: str, text: str) -> None:
 
 
 def _get_username() -> str:
-    """Best-effort: git config user.name → system user."""
+    """
+    Resolution order:
+      1. .mindvault.json user_name  (set during onboarding or first-chat prompt)
+      2. git config user.name
+      3. system login name (capitalized)
+    """
+    try:
+        from mindvault.user_config import get_name
+        stored = get_name()
+        if stored:
+            return stored
+    except Exception:
+        pass
     try:
         name = subprocess.check_output(
             ["git", "config", "user.name"],
@@ -158,26 +170,34 @@ def print_welcome(
     sessions: list[dict],
     model: str,
     embedding_model: str,
+    work_dir: str | None = None,
 ) -> None:
     """
     Render the Claude Code-style two-panel welcome box.
 
-    Left panel  — logo, greeting, version, model, license, cwd
-    Right panel — getting-started tips, recent sessions
+    Everything is derived from arguments or runtime state — nothing hardcoded.
+
+    Left panel  — logo, greeting, version, model, license notice, working dir
+    Right panel — getting-started tips, recent sessions with dates + previews
     """
     from prompt_toolkit import print_formatted_text
-    from mindvault.version import CURRENT_VERSION
+    from mindvault.version import CURRENT_VERSION, release_label
 
-    cols = shutil.get_terminal_size((120, 24)).columns
-    cols = max(cols, 80)  # minimum sensible width
+    # ── Terminal geometry ────────────────────────────────────────
+    cols = max(shutil.get_terminal_size((120, 24)).columns, 80)
 
-    # ── Panel dimensions ────────────────────────────────────────
-    LEFT_W = 42   # content chars inside left cell (excluding border/padding)
     # Row format: │ {left:<LEFT_W} │ {right:<RIGHT_W} │
-    # total cols = 1 + 1 + LEFT_W + 1 + 1 + 1 + RIGHT_W + 1 + 1 = LEFT_W + RIGHT_W + 7
+    # Border chars per row: "│ " + " │ " + " │" = 7
+    LEFT_W = 42
     RIGHT_W = max(cols - LEFT_W - 7, 20)
 
-    # ── Brain ASCII logo (5 lines, narrow chars only) ───────────
+    # ── Dynamic values ───────────────────────────────────────────
+    name = _get_username()
+    cwd = work_dir or str(Path.cwd())
+    version_label = f"MindVault v{CURRENT_VERSION}"
+    update = release_label()  # "New Release x.x.x" or None
+
+    # ── Brain ASCII logo ─────────────────────────────────────────
     LOGO = [
         "    ▗▄▄▄▄▖    ",
         "   ▟██████▙   ",
@@ -186,91 +206,86 @@ def print_welcome(
         "      ▐▌      ",
     ]
 
-    # ── Left panel lines (content only, no padding/border) ──────
-    name = _get_username()
-    greeting = f"Welcome back, {name}!"
+    # ── Left panel ───────────────────────────────────────────────
+    greeting = f"Welcome back, {name}!" if name else "Welcome to MindVault!"
     left_lines: list[tuple[str, str]] = [
         ("", ""),
-        ("box-name", greeting.center(LEFT_W)),
+        ("box-name",    greeting.center(LEFT_W)),
         ("", ""),
         *[("box-logo", line.center(LEFT_W)) for line in LOGO],
         ("", ""),
-        ("box-meta",    f"  MindVault v{CURRENT_VERSION}"),
+        ("box-meta",    f"  {version_label}"),
         ("box-meta",    f"  {model} · {embedding_model}"),
         ("", ""),
         ("box-license", "  Personal use — free"),
         ("box-license", "  Commercial use — contact me"),
         ("", ""),
-        ("box-meta",    f"  {str(Path.cwd())}"),
-        ("", ""),
+        ("box-meta",    f"  {cwd}"),
     ]
+    if update:
+        left_lines.append(("release", f"  ★ {update}"))
+    left_lines.append(("", ""))
 
-    # ── Right panel lines ────────────────────────────────────────
-    tip_sep = "─" * (RIGHT_W - 1)
+    # ── Right panel ──────────────────────────────────────────────
+    divider = " " + "─" * (RIGHT_W - 1)
 
     right_lines: list[tuple[str, str]] = [
         ("box-tip-head", " Getting started"),
-        ("box-divider",  " " + tip_sep),
+        ("box-divider",  divider),
         ("box-tip", " ingest         index your data"),
         ("box-tip", " chat           start chatting"),
         ("box-tip", " Shift+Tab      cycle modes"),
         ("box-tip", " /mode [name]   switch reasoning mode"),
         ("", ""),
         ("box-tip-head", " Recent sessions"),
-        ("box-divider",  " " + tip_sep),
+        ("box-divider",  divider),
     ]
 
     if sessions:
         for s in sessions[:5]:
-            date = s.get("started_at", "")[:10]
-            preview = (s.get("preview") or "")[:RIGHT_W - 16].strip()
-            status = s.get("status", "raw")
-            entry = f" {date}  {preview}"
-            right_lines.append(("box-session", entry[:RIGHT_W - 1]))
+            date = (s.get("started_at") or "")[:10]
+            raw_preview = (s.get("preview") or "").strip()
+            # Truncate preview to fit right panel (leave space for date + spacing)
+            max_preview = RIGHT_W - len(date) - 4
+            preview = raw_preview[:max(max_preview, 10)]
+            right_lines.append(("box-session", f" {date}  {preview}"))
     else:
         right_lines.append(("box-session", " No recent sessions"))
 
-    # ── Pad to equal height ──────────────────────────────────────
+    # ── Equalize panel heights ───────────────────────────────────
     n_rows = max(len(left_lines), len(right_lines))
     while len(left_lines) < n_rows:
         left_lines.append(("", ""))
     while len(right_lines) < n_rows:
         right_lines.append(("", ""))
 
-    # ── Render ────────────────────────────────────────────────────
-    title = f"MindVault v{CURRENT_VERSION}"
-    title_section = f"─── {title} "
-    top_fill = "─" * (cols - 2 - len(title_section))
-    top_border = "╭" + title_section + top_fill + "╮"
-    bot_border = "╰" + "─" * (cols - 2) + "╯"
-
+    # ── Render ───────────────────────────────────────────────────
     ft = FormattedText
 
-    # Top border
+    # Top border: ╭─── MindVault vX.X.X ─...─╮
+    # fixed: ╭(1) ─(1) ─(1) ─(1) space(1) title space(1) fill ╮(1) = 7 + len + fill
+    title_fill = max(0, cols - 7 - len(version_label))
     print_formatted_text(ft([
-        ("class:box-title", "╭─── "),
-        ("class:box-title", title),
-        ("class:box-border", " " + "─" * (cols - 2 - 5 - len(title)) + "╮"),
+        ("class:box-title",  "╭─── "),
+        ("class:box-title",  version_label),
+        ("class:box-border", " " + "─" * title_fill + "╮"),
     ]), style=TUI_STYLE)
 
     # Content rows
     for (lclass, lcontent), (rclass, rcontent) in zip(left_lines, right_lines):
-        # Truncate and pad content to exact widths
         ltext = (lcontent or "")[:LEFT_W].ljust(LEFT_W)
         rtext = (rcontent or "")[:RIGHT_W].ljust(RIGHT_W)
-        lclass = lclass or "box-meta"
-        rclass = rclass or "box-meta"
         print_formatted_text(ft([
-            ("class:box-border", "│ "),
-            (f"class:{lclass}", ltext),
-            ("class:box-border", " │ "),
-            (f"class:{rclass}", rtext),
-            ("class:box-border", " │"),
+            ("class:box-border",          "│ "),
+            (f"class:{lclass or 'box-meta'}", ltext),
+            ("class:box-border",          " │ "),
+            (f"class:{rclass or 'box-meta'}", rtext),
+            ("class:box-border",          " │"),
         ]), style=TUI_STYLE)
 
     # Bottom border
     print_formatted_text(ft([
-        ("class:box-border", bot_border),
+        ("class:box-border", "╰" + "─" * (cols - 2) + "╯"),
     ]), style=TUI_STYLE)
     print()
 

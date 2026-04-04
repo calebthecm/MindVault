@@ -372,12 +372,28 @@ def print_next_steps() -> None:
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 
+def collect_user_info() -> None:
+    """Ask for the user's name and save it to user config."""
+    from mindvault import user_config
+
+    header("Step 1 — About you")
+    current = user_config.get_name()
+    prompt = "Your first name (shown in the welcome screen)"
+    name = ask(prompt, default=current or "")
+    if name:
+        user_config.set_name(name)
+        ok(f"Name saved: {name}")
+    else:
+        warn("No name entered — you can set it later with: python mindvault.py setup")
+
+
 def main() -> None:
     print(f"\n{SEP}")
     print("  MINDVAULT — First Run Setup")
     print(SEP)
 
     check_python()
+    collect_user_info()
     check_dependencies()
 
     backend, ollama_base, llm_model, embedding_model = select_model_backend()
@@ -385,6 +401,10 @@ def main() -> None:
     patch_config(backend, ollama_base, llm_model, embedding_model)
     create_directories()
     create_gitignore()
+
+    from mindvault import user_config
+    user_config.mark_setup_complete()
+
     print_next_steps()
 
 
