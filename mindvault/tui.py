@@ -32,6 +32,7 @@ from __future__ import annotations
 import getpass
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -301,9 +302,13 @@ class BrainPrompt:
         text = prompt.ask()   # returns user input or None on quit
     """
 
+    # Seconds within which a second Ctrl+C press confirms exit
+    _CTRLC_WINDOW = 2.0
+
     def __init__(self, on_mode_change: Callable[[Mode], None] | None = None):
         self.current_mode: Mode = Mode.CHAT
         self._on_mode_change = on_mode_change
+        self._last_ctrlc: float = 0.0   # monotonic timestamp of last Ctrl+C
         self._session: PromptSession = self._build_session()
 
     def _build_session(self) -> PromptSession:
@@ -313,14 +318,37 @@ class BrainPrompt:
         def _cycle_mode(event) -> None:
             self.current_mode = next_mode(self.current_mode)
             config = get_config(self.current_mode)
-            # Clear current line and reprint
             event.app.current_buffer.reset()
             if self._on_mode_change:
                 self._on_mode_change(self.current_mode)
             else:
-                # Default: print mode switch inline
                 print()
                 print_mode_switch(config)
+
+        @kb.add("c-c")
+        def _handle_ctrlc(event) -> None:
+            """
+            First press: show warning and stay in prompt.
+            Second press within _CTRLC_WINDOW seconds: exit.
+            """
+            from prompt_toolkit import print_formatted_text as pft
+            now = time.monotonic()
+            if now - self._last_ctrlc < self._CTRLC_WINDOW:
+                # Confirmed — exit
+                event.app.exit(exception=KeyboardInterrupt())
+            else:
+                self._last_ctrlc = now
+                event.app.current_buffer.reset()
+
+                def _warn() -> None:
+                    pft(
+                        FormattedText([
+                            ("class:mode-desc", "\n  (Press Ctrl+C again to exit)\n"),
+                        ]),
+                        style=TUI_STYLE,
+                    )
+
+                event.app.run_in_terminal(_warn)
 
         return PromptSession(
             key_bindings=kb,
@@ -335,7 +363,9 @@ class BrainPrompt:
     def ask(self) -> str | None:
         """
         Show the two-bar prompt and wait for input.
-        Returns the entered text, or None if the user quit (Ctrl+C / Ctrl+D).
+        Returns the entered text, or None if the user confirmed quit.
+        First Ctrl+C shows a warning; second Ctrl+C within 2s exits.
+        Ctrl+D (EOF) exits immediately.
         """
         bar = _bar()
 
@@ -348,7 +378,11 @@ class BrainPrompt:
                 bottom_toolbar=self._bottom_toolbar,
                 style=TUI_STYLE,
             )
-        except (EOFError, KeyboardInterrupt):
+        except KeyboardInterrupt:
+            # Raised only on confirmed double-tap
+            return None
+        except EOFError:
+            # Ctrl+D — exit immediately (intentional, no double-tap needed)
             return None
 
         return result.strip() if result else ""
