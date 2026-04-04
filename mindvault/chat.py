@@ -379,6 +379,22 @@ def run_chat(
             continue
 
         # ── Slash commands ─────────────────────────────────────────────────────
+        if user_input.lower() in ("/help", "/?"):
+            print("""
+Commands:
+  /search <term>   search without LLM — shows scored results
+  /note <text>     quick-capture a note (indexed on next ingest)
+  /forget <topic>  suppress matching chunks from future retrieval
+  /sources         show sources from last answer
+  /remember <fact> save a fact to this session
+  /private         toggle private vault on/off
+  /mode [name]     show or switch reasoning mode (CHAT/PLAN/DECIDE/DEBATE/REFLECT/EXPLORE)
+  /resume          interactive session picker
+  /clear           clear conversation history
+  /quit or /exit   end session and save
+""")
+            continue
+
         if user_input.lower() in ("/quit", "/exit"):
             print("Ending session.")
             if session:

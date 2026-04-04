@@ -82,6 +82,11 @@ class MemoryStore:
                     suppressed INTEGER DEFAULT 0
                 );
             """)
+            # Migration: add suppressed column to existing databases that predate this field
+            try:
+                conn.execute("ALTER TABLE memory_importance ADD COLUMN suppressed INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
     def _init_collections(self) -> None:
         existing = {c.name for c in self.qdrant.get_collections().collections}
