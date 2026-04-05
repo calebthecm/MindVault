@@ -41,35 +41,42 @@ jobs:
       - name: Write formula
         shell: bash
         run: |
+          # Strip leading 'v' from version tag (v0.5.301 → 0.5.301)
+          PYPI_VERSION="${VERSION#v}"
           cat > tap/Formula/mindvault.rb <<EOF
           class Mindvault < Formula
-            include Language::Python::Virtualenv
-
-            desc "Local-first second brain RAG system"
+            desc "Local-first second brain — chat with your own knowledge"
             homepage "https://github.com/calebthecm/MindVault"
             url "${TARBALL_URL}"
             sha256 "${SHA256}"
-            license "Proprietary"
+            license "Source-Available"
+            version "${PYPI_VERSION}"
 
             depends_on "python@3.12"
 
             def install
-              virtualenv_install_with_resources
+              # Install into an isolated virtualenv, pulling deps from PyPI
+              venv = virtualenv_create(libexec, "python3.12")
+              venv.pip_install "mindvault==#{version}"
+              bin.install_symlink libexec/"bin/mindvault"
             end
 
             def caveats
               <<~EOS
-                MindVault also expects Ollama to be installed and running.
+                MindVault stores your brain data in ~/.mindvault/
 
-                Then run:
+                To get started:
+                  mindvault setup
+
+                For local LLM support, install Ollama first:
+                  brew install ollama
                   ollama pull nomic-embed-text
                   ollama pull llama3.2
-                  mindvault setup
               EOS
             end
 
             test do
-              system "#{bin}/mindvault", "--help"
+              assert_match "mindvault", shell_output("#{bin}/mindvault --help 2>&1", 0)
             end
           end
           EOF

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icon-text.png" alt="MindVault" width="320"/>
+</p>
+
 # MindVault
 
 A local-first second brain that turns your AI conversation exports, Obsidian notes, and documents into a searchable, conversational memory system.
@@ -8,7 +12,7 @@ Everything runs on your machine. No data leaves.
 
 ## What it does
 
-- **Ingests** Anthropic conversation exports, Obsidian vaults, PDFs, and plain text files
+- **Ingests** Claude, ChatGPT, and other AI conversation exports, Obsidian vaults, PDFs, and plain text files
 - **Indexes** content into a multi-layer memory system (raw → compressed → structured → linked)
 - **Remembers** entities, decisions, and goals extracted from every chat
 - **Retrieves** using hybrid scoring — summaries first, raw text only when needed
@@ -54,9 +58,12 @@ mindvault setup                # or: python -m mindvault setup
 
 ### Add your data
 
-Drop your Anthropic export folder into the project directory (any folder starting with `data-`). PDFs and `.txt`/`.md` files go anywhere — point the ingester at them manually.
+Drop your AI export folder into the project directory. PDFs and `.txt`/`.md` files go anywhere — point the ingester at them manually.
 
-- **Anthropic export:** `claude.ai → Settings → Export Data`
+| Provider | How to export |
+|---|---|
+| **Claude** | claude.ai → Settings → Export Data (folder starting with `data-`) |
+| **ChatGPT** | chatgpt.com → Settings → Data Controls → Export Data |
 
 ### Index and chat
 
