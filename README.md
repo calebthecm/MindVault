@@ -237,7 +237,7 @@ MindVault is fully open-source under the MIT License.
 - Commercial use is allowed.
 - Modification is allowed.
 - Distribution is allowed.
-- The software is provided under the standard MIT terms in [LICENSE](/Users/caleb/Brain/LICENSE).
+- The software is provided under the standard MIT terms in [LICENSE](LICENSE).
 
 ---
 
