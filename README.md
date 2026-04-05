@@ -8,8 +8,6 @@ A local-first second brain that turns your AI conversation exports, Obsidian not
 
 Everything runs on your machine. No data leaves.
 
-> **API & Web UI:** [`calebthecm/MindVault_API`](https://github.com/calebthecm/MindVault_API) (private)
-
 ---
 
 ## What it does
