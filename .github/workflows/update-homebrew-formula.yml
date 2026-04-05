@@ -4,6 +4,10 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build formula for (e.g. v0.5.460)"
+        required: true
 
 jobs:
   update-homebrew:
@@ -13,8 +17,14 @@ jobs:
       - name: Set release values
         shell: bash
         run: |
-          echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-          echo "TARBALL_URL=https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" >> "$GITHUB_ENV"
+          # On release events use the tag; on manual dispatch use the input
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "VERSION=${TAG}" >> "$GITHUB_ENV"
+          echo "TARBALL_URL=https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz" >> "$GITHUB_ENV"
 
       - name: Download source tarball
         shell: bash
