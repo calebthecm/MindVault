@@ -8,6 +8,8 @@ A local-first second brain that turns your AI conversation exports, Obsidian not
 
 Everything runs on your machine. No data leaves.
 
+MindVault is fully open-source under the MIT License. Commercial use, modification, and distribution are allowed under the terms of the MIT License.
+
 ---
 
 ## What it does
@@ -225,6 +227,17 @@ All settings in `mindvault/config.py`:
 | `SUGGEST_FOLLOWUPS` | `True` | Suggest follow-up questions after each answer |
 | `WRITE_SESSIONS_TO_VAULT` | `True` | Write session summary notes to Obsidian on exit |
 | `CHAT_INCLUDE_PRIVATE` | `False` | Include private vault by default |
+
+---
+
+## License
+
+MindVault is fully open-source under the MIT License.
+
+- Commercial use is allowed.
+- Modification is allowed.
+- Distribution is allowed.
+- The software is provided under the standard MIT terms in [LICENSE](/Users/caleb/Brain/LICENSE).
 
 ---
 

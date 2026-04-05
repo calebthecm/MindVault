@@ -11,8 +11,8 @@ Layout:
   │  MindVault v0.5.0       │ Recent sessions                                    │
   │  llama3.2 · nomic       │ 2026-04-03  "What is MindVault?"                  │
   │                         │                                                    │
-  │  Personal use — free    │                                                    │
-  │  Commercial — contact   │                                                    │
+  │  Open source — MIT      │                                                    │
+  │  Commercial use allowed │                                                    │
   │  /Users/caleb/Brain     │                                                    │
   ╰────────────────────────────────────────────────────────────────────────────╯
 
@@ -292,8 +292,8 @@ def print_welcome(
         ("box-meta",    f"  {version_label}"),
         ("box-meta",    f"  {model} · {embedding_model}"),
         ("", ""),
-        ("box-license", "  Personal use — free"),
-        ("box-license", "  Commercial use — contact me"),
+        ("box-license", "  Open source — MIT License"),
+        ("box-license", "  Commercial use allowed"),
         ("", ""),
         ("box-meta",    f"  {cwd}"),
     ]

@@ -62,7 +62,7 @@ jobs:
             homepage "https://github.com/calebthecm/MindVault"
             url "${TARBALL_URL}"
             sha256 "${SHA256}"
-            license "Source-Available"
+            license "MIT"
             version "${PYPI_VERSION}"
 
             depends_on "python@3.12"
