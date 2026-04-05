@@ -24,7 +24,10 @@ jobs:
       - name: Compute SHA256
         shell: bash
         run: |
-          echo "SHA256=$(sha256sum mindvault.tar.gz | awk '{print $1}')" >> "$GITHUB_ENV"
+          # Strip all whitespace to prevent truncation in heredoc expansion
+          SHA256_RAW=$(sha256sum mindvault.tar.gz | awk '{print $1}' | tr -d '[:space:]')
+          echo "SHA256=${SHA256_RAW}" >> "$GITHUB_ENV"
+          echo "Computed SHA256: ${SHA256_RAW} (${#SHA256_RAW} chars)"
 
       - name: Checkout tap repo
         uses: actions/checkout@v4

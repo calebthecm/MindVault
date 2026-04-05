@@ -6,3 +6,5 @@ prompt_toolkit
 rich
 ddgs
 trafilatura
+fastapi
+uvicorn

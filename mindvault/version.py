@@ -19,7 +19,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # The version this running instance is at
-CURRENT_VERSION = "0.5.301"
+CURRENT_VERSION = "0.5.460"
 
 # Remote update API — returns {"version": "x.x.x"}
 UPDATE_API_URL = "https://version-api.mndvlt.com/api/version"

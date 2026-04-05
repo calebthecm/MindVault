@@ -15,6 +15,7 @@ Commands:
   ingest        Index export data, Obsidian vaults, and build memory links
   notes         Regenerate Obsidian notes only
   consolidate   Merge near-duplicate compressed memories
+  web           Start local web UI (http://localhost:7432)
   setup         First-run configuration wizard
   stats         Show index and session statistics
   sessions      List resumable chat sessions
@@ -189,6 +190,24 @@ def cmd_sessions(args: list[str]) -> None:
     print()
 
 
+def cmd_web(args: list[str]) -> None:
+    port = 7432
+    for a in args:
+        if a.startswith("--port="):
+            port = int(a.split("=")[1])
+        elif a.lstrip("-").isdigit():
+            port = int(a.lstrip("-"))
+
+    try:
+        import uvicorn
+    except ImportError:
+        print("uvicorn not installed: pip install uvicorn fastapi")
+        sys.exit(1)
+
+    print(f"\n  MindVault Web UI → http://localhost:{port}\n  Press Ctrl+C to stop.\n")
+    uvicorn.run("web.server:app", host="127.0.0.1", port=port, reload=False)
+
+
 def cmd_consolidate(args: list[str]) -> None:
     dry_run = "--dry-run" in args
     from mindvault.config import (
@@ -233,6 +252,7 @@ COMMANDS = {
     "stats": cmd_stats,
     "sessions": cmd_sessions,
     "consolidate": cmd_consolidate,
+    "web": cmd_web,
     "help": cmd_help,
 }
 
