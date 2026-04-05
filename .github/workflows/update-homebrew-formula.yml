@@ -70,9 +70,11 @@ jobs:
             depends_on "python@3.12"
 
             def install
-              # Install into an isolated virtualenv, pulling deps from PyPI
+              # Use system pip directly to avoid Homebrew's --uploaded-prior-to
+              # timestamp restriction, which blocks packages uploaded after the
+              # source tarball was created.
               venv = virtualenv_create(libexec, "python3.12")
-              venv.pip_install "mindvault==#{version}"
+              system libexec/"bin/pip", "install", "mindvault==#{version}"
               bin.install_symlink libexec/"bin/mindvault"
             end
 
