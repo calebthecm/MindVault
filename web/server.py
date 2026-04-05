@@ -8,8 +8,14 @@ Start with: mindvault web
 from __future__ import annotations
 
 import logging
+import json
 import sys
+import threading
+from queue import Queue
+from functools import lru_cache
 from pathlib import Path
+
+from qdrant_client import QdrantClient
 
 # Ensure project root is on path when run directly
 _root = Path(__file__).parent.parent
@@ -17,7 +23,7 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -50,6 +56,95 @@ class StatusResponse(BaseModel):
     version: str
 
 
+def _sources_from_chunks(chunks: list[dict]) -> list[dict]:
+    return [
+        {
+            "title": c.get("title") or c.get("source_id", ""),
+            "score": round(c.get("score", 0), 3),
+            "layer": c.get("layer", ""),
+            "created_at": c.get("created_at", ""),
+        }
+        for c in chunks[:5]
+    ]
+
+
+@lru_cache(maxsize=1)
+def _web_services():
+    from mindvault.chat import embed_query
+    from mindvault.config import (
+        CHAT_TOP_K,
+        CHAT_INCLUDE_PRIVATE,
+        COMPRESSED_SCORE_THRESHOLD,
+        DB_PATH,
+        OLLAMA_BASE,
+        LLM_MODEL,
+        QDRANT_PATH,
+        COLLECTION_COMPRESSED_PUBLIC,
+        COLLECTION_COMPRESSED_PRIVATE,
+    )
+    from src.ingestion.store import COLLECTION_PUBLIC, COLLECTION_PRIVATE
+    from src.llm import chat_with_brain
+    from src.memory.retriever import retrieve
+    from src.memory.store import MemoryStore
+
+    qdrant = QdrantClient(path=str(QDRANT_PATH))
+    memory_store = MemoryStore(
+        db_path=DB_PATH,
+        qdrant=qdrant,
+        compressed_collections=(COLLECTION_COMPRESSED_PUBLIC, COLLECTION_COMPRESSED_PRIVATE),
+    )
+    return {
+        "embed_query": embed_query,
+        "chat_with_brain": chat_with_brain,
+        "retrieve": retrieve,
+        "qdrant": qdrant,
+        "memory_store": memory_store,
+        "chat_top_k": CHAT_TOP_K,
+        "chat_include_private": CHAT_INCLUDE_PRIVATE,
+        "compressed_threshold": COMPRESSED_SCORE_THRESHOLD,
+        "ollama_base": OLLAMA_BASE,
+        "llm_model": LLM_MODEL,
+        "collection_public": COLLECTION_PUBLIC,
+        "collection_private": COLLECTION_PRIVATE,
+        "collection_compressed_public": COLLECTION_COMPRESSED_PUBLIC,
+        "collection_compressed_private": COLLECTION_COMPRESSED_PRIVATE,
+    }
+
+
+def _retrieve_for_web(query: str, include_private: bool, top_k: int) -> list[dict]:
+    services = _web_services()
+    from mindvault.chat import condensed_retrieval_query
+
+    retrieval_query = condensed_retrieval_query(query)
+    vector = services["embed_query"](retrieval_query)
+
+    chunks = services["retrieve"](
+        query_vector=vector,
+        qdrant=services["qdrant"],
+        memory_store=services["memory_store"],
+        raw_collection=services["collection_public"],
+        compressed_collection=services["collection_compressed_public"],
+        top_k=top_k,
+        compressed_threshold=services["compressed_threshold"],
+        expand_links=False,
+    )
+
+    if include_private:
+        private_chunks = services["retrieve"](
+            query_vector=vector,
+            qdrant=services["qdrant"],
+            memory_store=services["memory_store"],
+            raw_collection=services["collection_private"],
+            compressed_collection=services["collection_compressed_private"],
+            top_k=top_k,
+            compressed_threshold=services["compressed_threshold"],
+            expand_links=False,
+        )
+        chunks = sorted(chunks + private_chunks, key=lambda c: c["score"], reverse=True)[:top_k]
+
+    return chunks
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
@@ -58,6 +153,11 @@ async def index():
     if html_file.exists():
         return HTMLResponse(html_file.read_text())
     return HTMLResponse("<h1>MindVault Web UI</h1><p>static/index.html not found.</p>")
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    return Response(status_code=204)
 
 
 @app.get("/api/status", response_model=StatusResponse)
@@ -69,31 +169,36 @@ async def status():
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     try:
-        from mindvault.config import CHAT_TOP_K, CHAT_INCLUDE_PRIVATE
-        from src.memory.retriever import retrieve
-        from src.llm import chat_with_brain
+        services = _web_services()
+        include_private = req.include_private or services["chat_include_private"]
+        chunks = _retrieve_for_web(req.query, include_private=include_private, top_k=services["chat_top_k"])
 
-        chunks = retrieve(
-            req.query,
-            top_k=CHAT_TOP_K,
-            include_private=req.include_private or CHAT_INCLUDE_PRIVATE,
-        )
+        from mindvault.council import run_council
+        from mindvault.modes import Mode
 
-        answer = chat_with_brain(
-            query=req.query,
-            chunks=chunks,
-            history=[],
-        )
+        try:
+            mode = Mode(req.mode.upper())
+        except ValueError:
+            mode = Mode.CHAT
 
-        sources = [
-            {
-                "title": c.get("title") or c.get("source_id", ""),
-                "score": round(c.get("score", 0), 3),
-                "layer": c.get("layer", ""),
-                "created_at": c.get("created_at", ""),
-            }
-            for c in chunks[:5]
-        ]
+        if mode == Mode.CHAT:
+            answer = services["chat_with_brain"](
+                query=req.query,
+                context_chunks=chunks,
+                model=services["llm_model"],
+                base_url=services["ollama_base"],
+                conversation_history=[],
+            )
+        else:
+            answer = run_council(
+                mode=mode,
+                query=req.query,
+                chunks=chunks,
+                model=services["llm_model"],
+                base_url=services["ollama_base"],
+            )
+
+        sources = _sources_from_chunks(chunks)
 
         return ChatResponse(answer=answer, sources=sources, mode=req.mode)
 
@@ -102,11 +207,81 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/chat/stream")
+async def chat_stream(req: ChatRequest):
+    def event_stream():
+        queue: Queue[tuple[str, object]] = Queue()
+
+        def _run() -> None:
+            try:
+                services = _web_services()
+                include_private = req.include_private or services["chat_include_private"]
+                chunks = _retrieve_for_web(req.query, include_private=include_private, top_k=services["chat_top_k"])
+
+                from mindvault.council import run_council
+                from mindvault.modes import Mode
+
+                try:
+                    mode = Mode(req.mode.upper())
+                except ValueError:
+                    mode = Mode.CHAT
+
+                answer_parts: list[str] = []
+
+                def _on_token(token: str) -> None:
+                    answer_parts.append(token)
+                    queue.put(("token", token))
+
+                if mode == Mode.CHAT:
+                    answer = run_council(
+                        mode=mode,
+                        query=req.query,
+                        chunks=chunks,
+                        model=services["llm_model"],
+                        base_url=services["ollama_base"],
+                        history=[],
+                        on_token=_on_token,
+                    )
+                else:
+                    answer = run_council(
+                        mode=mode,
+                        query=req.query,
+                        chunks=chunks,
+                        model=services["llm_model"],
+                        base_url=services["ollama_base"],
+                    )
+                    answer_parts.append(answer)
+                    queue.put(("token", answer))
+
+                queue.put((
+                    "done",
+                    {
+                        "answer": "".join(answer_parts) if mode == Mode.CHAT else answer,
+                        "sources": _sources_from_chunks(chunks),
+                        "mode": mode.value,
+                    },
+                ))
+            except Exception as exc:
+                logger.error(f"Chat stream error: {exc}", exc_info=True)
+                queue.put(("error", str(exc)))
+            finally:
+                queue.put(("close", None))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+        while True:
+            event, payload = queue.get()
+            if event == "close":
+                break
+            yield f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 @app.get("/api/search")
 async def search(q: str, k: int = 8):
     try:
-        from src.memory.retriever import retrieve
-        chunks = retrieve(q, top_k=k)
+        chunks = _retrieve_for_web(q, include_private=False, top_k=k)
         return {
             "results": [
                 {

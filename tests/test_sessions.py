@@ -1,11 +1,11 @@
-"""Tests for src/sessions/manager.py — pure file I/O, no LLM."""
+"""Tests for session manager — pure file I/O, no LLM."""
 
 import gzip
 import time
 
 import pytest
 
-from src.sessions.manager import Session, load_session, load_last_session, list_sessions
+from mindvault.sessions.manager import Session, load_session, load_last_session, list_sessions
 
 
 @pytest.fixture

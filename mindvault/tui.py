@@ -378,12 +378,42 @@ class BrainPrompt:
 
     # Seconds within which a second Ctrl+C press confirms exit
     _CTRLC_WINDOW = 2.0
+    _PASTE_COLLAPSE_LINES = 7
 
     def __init__(self, on_mode_change: Callable[[Mode], None] | None = None):
         self.current_mode: Mode = Mode.CHAT
         self._on_mode_change = on_mode_change
         self._last_ctrlc: float = 0.0   # monotonic timestamp of last Ctrl+C
+        self._pending_pastes: list[tuple[str, str]] = []
         self._session: PromptSession = self._build_session()
+
+    @staticmethod
+    def _normalize_paste(text: str) -> str:
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+
+    @staticmethod
+    def _line_count(text: str) -> int:
+        return len(text.splitlines()) or (1 if text else 0)
+
+    def _format_pasted_block(self, text: str) -> str:
+        line_count = self._line_count(text)
+        return f"User pasted content ({line_count} lines):\n```text\n{text}\n```"
+
+    def _expand_pending_pastes(self, text: str) -> str:
+        expanded = text
+        for placeholder, pasted_text in self._pending_pastes:
+            if placeholder not in expanded:
+                continue
+            expanded = expanded.replace(
+                placeholder,
+                self._format_pasted_block(pasted_text),
+                1,
+            )
+        self._pending_pastes.clear()
+        return expanded
+
+    def _reset_pending_pastes(self) -> None:
+        self._pending_pastes.clear()
 
     def _build_session(self) -> PromptSession:
         kb = KeyBindings()
@@ -393,11 +423,23 @@ class BrainPrompt:
             self.current_mode = next_mode(self.current_mode)
             config = get_config(self.current_mode)
             event.app.current_buffer.reset()
+            self._reset_pending_pastes()
             if self._on_mode_change:
                 self._on_mode_change(self.current_mode)
             else:
                 print()
                 print_mode_switch(config)
+
+        @kb.add(Keys.BracketedPaste)
+        def _handle_bracketed_paste(event) -> None:
+            pasted_text = self._normalize_paste(event.data or "")
+            line_count = self._line_count(pasted_text)
+            if line_count > self._PASTE_COLLAPSE_LINES:
+                placeholder = f"[Pasted ({line_count})]"
+                self._pending_pastes.append((placeholder, pasted_text))
+                event.app.current_buffer.insert_text(placeholder)
+                return
+            event.app.current_buffer.insert_text(pasted_text)
 
         @kb.add("c-c")
         def _handle_ctrlc(event) -> None:
@@ -413,6 +455,7 @@ class BrainPrompt:
             else:
                 self._last_ctrlc = now
                 event.app.current_buffer.reset()
+                self._reset_pending_pastes()
 
                 def _warn() -> None:
                     pft(
@@ -457,9 +500,13 @@ class BrainPrompt:
             return None
         except EOFError:
             # Ctrl+D — exit immediately (intentional, no double-tap needed)
+            self._reset_pending_pastes()
             return None
 
-        return result.strip() if result else ""
+        if not result:
+            self._reset_pending_pastes()
+            return ""
+        return self._expand_pending_pastes(result).strip()
 
     @property
     def mode(self) -> Mode:

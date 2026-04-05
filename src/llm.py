@@ -479,15 +479,33 @@ def compress_session(
     if not turns:
         return None
 
+    def _clip(text: str, limit: int = 280) -> str:
+        compact = " ".join(str(text).split())
+        return compact[:limit]
+
     transcript_parts = []
     char_count = 0
+    truncated = False
     for turn in turns:
         line = f"{turn['role'].upper()}: {turn['content']}"
         if char_count + len(line) > max_chars:
-            transcript_parts.append("[...truncated...]")
+            truncated = True
             break
         transcript_parts.append(line)
         char_count += len(line)
+
+    if truncated:
+        first_turns = turns[:4]
+        last_turns = turns[-8:] if len(turns) > 8 else turns
+        sampled_lines: list[str] = []
+        seen: set[tuple[str, str]] = set()
+        for turn in first_turns + last_turns:
+            key = (turn.get("role", ""), turn.get("content", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            sampled_lines.append(f"{turn['role'].upper()}: {_clip(turn['content'])}")
+        transcript_parts = sampled_lines + ["[...middle of long session omitted for brevity...]"]
 
     transcript = "\n".join(transcript_parts)
 
@@ -498,10 +516,43 @@ def compress_session(
 
 Be specific. Second person: "You discussed...", "You decided..."
 No bullet points. Prose only. Under 150 words.
+If the session excerpt is partial or truncated, summarize the visible parts only.
+Do not apologize, ask for more context, or mention truncation unless it directly changes a conclusion.
 
 Session:
 {transcript}
 
 Summary:"""
 
-    return _call_ollama(prompt, model=model, base_url=base_url, timeout=60.0)
+    result = _call_ollama(prompt, model=model, base_url=base_url, timeout=60.0)
+    if not result:
+        return None
+    lowered = result.lower()
+    refusal_markers = (
+        "i'm sorry",
+        "i’m sorry",
+        "not enough information",
+        "could you share the full",
+        "provided was truncated",
+    )
+    if any(marker in lowered for marker in refusal_markers):
+        summary_bits: list[str] = []
+        user_topics = [
+            _clip(turn["content"], 120)
+            for turn in turns
+            if turn.get("role") == "user" and turn.get("content")
+        ]
+        assistant_points = [
+            _clip(turn["content"], 120)
+            for turn in turns
+            if turn.get("role") == "assistant" and turn.get("content")
+        ]
+        if user_topics:
+            summary_bits.append(f"You discussed {user_topics[0]}")
+        if len(user_topics) > 1:
+            summary_bits.append(f"You also covered {user_topics[1]}")
+        if assistant_points:
+            summary_bits.append(f"Key response details included {assistant_points[0]}")
+        fallback = ". ".join(summary_bits).strip()
+        return (fallback + ".")[:280] if fallback else "You discussed a long session with multiple topics and outcomes."
+    return result

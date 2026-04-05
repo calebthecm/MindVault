@@ -1,0 +1,15 @@
+{
+  "name": "mindvault",
+  "version": "0.5.461",
+  "description": "JavaScript CLI wrapper for the MindVault Python app",
+  "license": "SEE LICENSE IN LICENSE",
+  "bin": {
+    "mindvault": "./bin/mindvault.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

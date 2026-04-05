@@ -28,6 +28,7 @@ Keys:
 """
 
 import sys
+import re
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -74,17 +75,118 @@ from src.llm import compress_session
 from src.memory.extractor import extract_entities_from_turn, deduplicate_entities
 from src.memory.retriever import retrieve
 from src.memory.store import MemoryStore
-from src.sessions.manager import Session, load_session, load_last_session
+from mindvault.sessions.manager import Session, load_session, load_last_session
+
+
+def _shrink_for_embedding(text: str, max_chars: int) -> str:
+    """Trim oversized queries while keeping the start and end intact."""
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_chars:
+        return normalized
+    if max_chars < 200:
+        return normalized[:max_chars]
+    head = int(max_chars * 0.7)
+    tail = max_chars - head - len("\n...\n")
+    return normalized[:head] + "\n...\n" + normalized[-max(tail, 0):]
+
+
+def _extract_pasted_blocks(text: str) -> list[str]:
+    pattern = re.compile(r"User pasted content \(\d+ lines\):\n```text\n([\s\S]*?)\n```")
+    return [block.strip() for block in pattern.findall(text)]
+
+
+def condensed_retrieval_query(text: str, max_chars: int = 2400) -> str:
+    """
+    Build a retrieval-focused query from a potentially huge user message.
+
+    Keep the user's explicit ask, then compress any large pasted payloads into a
+    short search surrogate so vector search stays robust and semantically useful.
+    """
+    normalized = text.strip()
+    if len(normalized) <= max_chars and len(normalized.splitlines()) <= 24:
+        return normalized
+
+    pasted_blocks = _extract_pasted_blocks(normalized)
+    outside = re.sub(r"User pasted content \(\d+ lines\):\n```text\n[\s\S]*?\n```", " ", normalized)
+    outside = re.sub(r"\s+", " ", outside).strip()
+
+    parts: list[str] = []
+    if outside:
+        parts.append(outside[:900])
+
+    for idx, block in enumerate(pasted_blocks[:2], start=1):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        excerpt = lines[:8]
+        if len(lines) > 12:
+            excerpt += lines[-4:]
+        excerpt = [line[:180] for line in excerpt]
+        summary = " | ".join(excerpt)
+        parts.append(f"Pasted block {idx} summary: {summary}")
+
+    if not parts:
+        return _shrink_for_embedding(normalized, max_chars)
+
+    condensed = "\n".join(parts)
+    return _shrink_for_embedding(condensed, max_chars)
 
 
 def embed_query(text: str) -> list[float]:
+    from mindvault.config import LLM_API_KEY, LLM_BACKEND
+
+    if LLM_BACKEND == "ollama":
+        candidates = [text]
+        for max_chars in (12000, 8000, 4000, 2000):
+            shrunk = _shrink_for_embedding(text, max_chars)
+            if shrunk not in candidates:
+                candidates.append(shrunk)
+
+        last_error: Exception | None = None
+        for candidate in candidates:
+            payloads = [
+                {"model": EMBEDDING_MODEL, "input": [candidate]},
+                {"model": EMBEDDING_MODEL, "input": candidate},
+            ]
+            for payload in payloads:
+                try:
+                    resp = httpx.post(
+                        f"{OLLAMA_BASE}/api/embed",
+                        json=payload,
+                        timeout=30.0,
+                    )
+                    resp.raise_for_status()
+                    embeddings = resp.json()["embeddings"]
+                    if not embeddings:
+                        raise RuntimeError("Ollama returned no embeddings")
+                    return embeddings[0]
+                except (httpx.HTTPError, KeyError, RuntimeError) as exc:
+                    last_error = exc
+                    if isinstance(exc, httpx.HTTPStatusError):
+                        detail = exc.response.text.lower()
+                        if "context length" not in detail and "input length exceeds" not in detail:
+                            break
+                    continue
+        if isinstance(last_error, httpx.HTTPStatusError):
+            detail = last_error.response.text[:400]
+            raise RuntimeError(
+                f"Ollama embedding failed for model '{EMBEDDING_MODEL}'. "
+                f"Response: {detail}"
+            ) from last_error
+        raise RuntimeError(
+            f"Ollama embedding failed for model '{EMBEDDING_MODEL}'. "
+            "Make sure the model is pulled and Ollama is running."
+        ) from last_error
+
     resp = httpx.post(
-        f"{OLLAMA_BASE}/api/embed",
-        json={"model": EMBEDDING_MODEL, "input": [text]},
+        f"{OLLAMA_BASE}/embeddings",
+        json={"model": EMBEDDING_MODEL, "input": text},
+        headers={"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else {},
         timeout=30.0,
     )
     resp.raise_for_status()
-    return resp.json()["embeddings"][0]
+    data = resp.json()
+    return data["data"][0]["embedding"]
 
 
 def _confidence_label(score: float) -> str:
@@ -270,7 +372,7 @@ def run_chat(
     from mindvault.version import latest_version as _latest
     _latest(wait=True, timeout=1.5)
 
-    from src.sessions.manager import list_sessions
+    from mindvault.sessions.manager import list_sessions
     recent = list_sessions(SESSIONS_DIR)[:5] if SESSIONS_DIR.exists() else []
     print_welcome(
         sessions=recent,
@@ -287,9 +389,11 @@ def run_chat(
         mode = prompt_ui.mode
         config = get_config(mode)
 
+        retrieval_query = condensed_retrieval_query(query)
+
         # Parse time filter before embedding so the model sees a clean query
         from src.memory.time_filter import parse_time_filter
-        embed_text, date_after, date_before = parse_time_filter(query)
+        embed_text, date_after, date_before = parse_time_filter(retrieval_query)
         if date_after:
             after_str = date_after.strftime("%Y-%m-%d")
             before_str = (date_before or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
@@ -367,11 +471,15 @@ def run_chat(
 
         # CHAT mode: animate while generating, render full markdown at end
         if mode == Mode.CHAT:
-            anim = BakingAnimation()
-            anim.start()
-            streamed_tokens: list[str] = []
+            print_bar()
+            sys.stdout.write(f"\nBrain [{config.label}]: ")
+            sys.stdout.flush()
+            streamed_any = False
             def _on_token(t: str) -> None:
-                streamed_tokens.append(t)
+                nonlocal streamed_any
+                streamed_any = True
+                sys.stdout.write(t)
+                sys.stdout.flush()
             response = run_council(
                 mode=mode,
                 query=query,
@@ -381,9 +489,9 @@ def run_chat(
                 history=history,
                 on_token=_on_token,
             )
-            elapsed = anim.stop()
-            print_bar()
-            print(f"✻ Baked for {elapsed:.1f}s")
+            if streamed_any:
+                sys.stdout.write("\n\n")
+                sys.stdout.flush()
         else:
             # Council modes: show thinking indicators then wait for full response
             anim = BakingAnimation()
@@ -399,8 +507,13 @@ def run_chat(
 
         if response:
             label = f"Brain [{config.label}]"
-            print_bar()
-            print_markdown_response(label, response)
+            if mode == Mode.CHAT:
+                if not streamed_any:
+                    print_bar()
+                    print_markdown_response(label, response)
+            else:
+                print_bar()
+                print_markdown_response(label, response)
             history.append({"role": "user", "content": query})
             history.append({"role": "assistant", "content": response})
 
@@ -430,13 +543,12 @@ def run_chat(
                     from src.llm import suggest_followups
                     suggestions = suggest_followups(q, r, model=LLM_MODEL, base_url=OLLAMA_BASE)
                     if suggestions:
-                        from prompt_toolkit.patch_stdout import run_in_terminal
                         def _print_suggestions() -> None:
                             print("  Related:")
                             for s in suggestions:
                                 print(f"    · {s}")
                             print()
-                        run_in_terminal(_print_suggestions)
+                        _print_suggestions()
                 threading.Thread(target=_suggest_bg, daemon=True).start()
         else:
             print("\n[LLM did not respond — check if Ollama is running]\n")
@@ -447,8 +559,10 @@ def run_chat(
         return
 
     # ── Interactive REPL ───────────────────────────────────────────────────────
+    from prompt_toolkit.patch_stdout import patch_stdout as _patch_stdout
     while True:
-        user_input = prompt_ui.ask()
+        with _patch_stdout():
+            user_input = prompt_ui.ask()
 
         # None = user quit via Ctrl+C / Ctrl+D
         if user_input is None:

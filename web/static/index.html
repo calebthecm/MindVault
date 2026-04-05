@@ -87,7 +87,6 @@
       border-radius: 12px;
       font-size: 14px;
       line-height: 1.6;
-      white-space: pre-wrap;
       word-break: break-word;
     }
     .msg.user .bubble {
@@ -105,6 +104,50 @@
       color: var(--dim);
       font-style: italic;
     }
+    .bubble p + p,
+    .bubble ul + p,
+    .bubble pre + p,
+    .bubble p + ul,
+    .bubble ul + ul,
+    .bubble pre + ul { margin-top: 10px; }
+    .bubble h1, .bubble h2, .bubble h3 {
+      font-size: 15px;
+      margin: 12px 0 6px;
+      color: #fff;
+    }
+    .bubble h1:first-child, .bubble h2:first-child, .bubble h3:first-child { margin-top: 0; }
+    .bubble ul {
+      padding-left: 18px;
+      margin: 8px 0;
+    }
+    .bubble li + li { margin-top: 4px; }
+    .bubble code {
+      background: #171717;
+      border: 1px solid #242424;
+      border-radius: 6px;
+      padding: 1px 5px;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+    }
+    .bubble pre {
+      background: #0d0d0d;
+      border: 1px solid #242424;
+      border-radius: 10px;
+      padding: 12px;
+      overflow-x: auto;
+      margin: 8px 0;
+    }
+    .bubble pre code {
+      background: transparent;
+      border: none;
+      padding: 0;
+      font-size: 12px;
+    }
+    .bubble a {
+      color: var(--blaze2);
+      text-decoration: none;
+    }
+    .bubble a:hover { text-decoration: underline; }
 
     .sources {
       margin-top: 8px;
@@ -188,6 +231,8 @@
   <select id="mode-select">
     <option value="CHAT">💬 CHAT</option>
     <option value="PLAN">📋 PLAN</option>
+    <option value="DECIDE">🗳 DECIDE</option>
+    <option value="DEBATE">⚖ DEBATE</option>
     <option value="REFLECT">🔍 REFLECT</option>
     <option value="EXPLORE">🕸 EXPLORE</option>
   </select>
@@ -246,6 +291,82 @@
     }
   });
 
+  function escapeHtml(text) {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function renderInlineMarkdown(text) {
+    let html = escapeHtml(text);
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+    return html;
+  }
+
+  function renderMarkdown(text) {
+    const escaped = text.replace(/\r\n/g, '\n');
+    const codeBlocks = [];
+    const withBlocks = escaped.replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) => {
+      const block = `<pre><code>${escapeHtml(code.trim())}</code></pre>`;
+      codeBlocks.push(block);
+      return `@@CODEBLOCK_${codeBlocks.length - 1}@@`;
+    });
+
+    const paragraphs = withBlocks.split(/\n\s*\n/);
+    const html = paragraphs.map(block => {
+      const trimmed = block.trim();
+      if (!trimmed) return '';
+      if (/^@@CODEBLOCK_\d+@@$/.test(trimmed)) return trimmed;
+      if (/^#{1,3}\s/.test(trimmed)) {
+        const level = trimmed.match(/^#+/)[0].length;
+        return `<h${level}>${renderInlineMarkdown(trimmed.replace(/^#{1,3}\s+/, ''))}</h${level}>`;
+      }
+      if (trimmed.split('\n').every(line => /^\s*[-*]\s+/.test(line))) {
+        const items = trimmed.split('\n')
+          .map(line => line.replace(/^\s*[-*]\s+/, '').trim())
+          .filter(Boolean)
+          .map(line => `<li>${renderInlineMarkdown(line)}</li>`)
+          .join('');
+        return `<ul>${items}</ul>`;
+      }
+      return `<p>${trimmed.split('\n').map(line => renderInlineMarkdown(line)).join('<br>')}</p>`;
+    }).join('');
+
+    return html.replace(/@@CODEBLOCK_(\d+)@@/g, (_, idx) => codeBlocks[Number(idx)]);
+  }
+
+  function setBubbleContent(bubble, role, text) {
+    if (role === 'assistant') {
+      bubble.innerHTML = renderMarkdown(text);
+    } else {
+      bubble.textContent = text;
+    }
+  }
+
+  function renderSources(container, sources = []) {
+    const old = container.querySelector('.sources');
+    if (old) old.remove();
+    if (sources.length === 0) return;
+
+    const chips = document.createElement('div');
+    chips.className = 'sources';
+    sources.forEach(s => {
+      const chip = document.createElement('div');
+      chip.className = 'source-chip';
+      const label = s.title || s.chunk_id || 'source';
+      chip.innerHTML = `${escapeHtml(label.slice(0, 28))}<span class="score">${s.score}</span>`;
+      chip.title = label;
+      chips.appendChild(chip);
+    });
+    container.appendChild(chips);
+  }
+
   function appendMessage(role, text, sources = []) {
     if (emptyEl) emptyEl.remove();
 
@@ -254,26 +375,13 @@
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble' + (text === '…' ? ' thinking' : '');
-    bubble.textContent = text;
+    setBubbleContent(bubble, role, text);
     msg.appendChild(bubble);
-
-    if (sources.length > 0) {
-      const chips = document.createElement('div');
-      chips.className = 'sources';
-      sources.forEach(s => {
-        const chip = document.createElement('div');
-        chip.className = 'source-chip';
-        const label = s.title || s.chunk_id || 'source';
-        chip.innerHTML = `${label.slice(0, 28)}<span class="score">${s.score}</span>`;
-        chip.title = label;
-        chips.appendChild(chip);
-      });
-      msg.appendChild(chips);
-    }
+    renderSources(msg, sources);
 
     messagesEl.appendChild(msg);
     messagesEl.scrollTop = messagesEl.scrollHeight;
-    return bubble;
+    return { msg, bubble };
   }
 
   form.addEventListener('submit', async e => {
@@ -286,10 +394,10 @@
     sendBtn.disabled = true;
 
     appendMessage('user', query);
-    const thinkingBubble = appendMessage('assistant', '…');
+    const { msg: assistantMsg, bubble: thinkingBubble } = appendMessage('assistant', '…');
 
     try {
-      const res = await fetch('/api/chat', {
+      const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -302,31 +410,55 @@
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         thinkingBubble.className = 'bubble';
-        thinkingBubble.textContent = `Error: ${err.detail || 'request failed'}`;
+        setBubbleContent(thinkingBubble, 'assistant', `Error: ${err.detail || 'request failed'}`);
         return;
       }
 
-      const data = await res.json();
-      thinkingBubble.className = 'bubble';
-      thinkingBubble.textContent = data.answer;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let answer = '';
 
-      if (data.sources?.length) {
-        const chips = document.createElement('div');
-        chips.className = 'sources';
-        data.sources.forEach(s => {
-          const chip = document.createElement('div');
-          chip.className = 'source-chip';
-          const label = s.title || 'source';
-          chip.innerHTML = `${label.slice(0, 28)}<span class="score">${s.score}</span>`;
-          chip.title = label;
-          chips.appendChild(chip);
-        });
-        thinkingBubble.parentElement.appendChild(chips);
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary !== -1) {
+          const rawEvent = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+
+          let eventName = 'message';
+          let data = '';
+          rawEvent.split('\n').forEach(line => {
+            if (line.startsWith('event:')) eventName = line.slice(6).trim();
+            if (line.startsWith('data:')) data += line.slice(5).trim();
+          });
+
+          if (eventName === 'token') {
+            answer += JSON.parse(data);
+            thinkingBubble.className = 'bubble';
+            setBubbleContent(thinkingBubble, 'assistant', answer);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          } else if (eventName === 'done') {
+            const payload = JSON.parse(data);
+            answer = payload.answer || answer;
+            thinkingBubble.className = 'bubble';
+            setBubbleContent(thinkingBubble, 'assistant', answer);
+            renderSources(assistantMsg, payload.sources || []);
+          } else if (eventName === 'error') {
+            thinkingBubble.className = 'bubble';
+            setBubbleContent(thinkingBubble, 'assistant', `Error: ${JSON.parse(data)}`);
+          }
+
+          boundary = buffer.indexOf('\n\n');
+        }
       }
 
     } catch (err) {
       thinkingBubble.className = 'bubble';
-      thinkingBubble.textContent = `Failed to reach MindVault server: ${err.message}`;
+      setBubbleContent(thinkingBubble, 'assistant', `Failed to reach MindVault server: ${err.message}`);
     } finally {
       sendBtn.disabled = false;
       input.focus();

@@ -147,7 +147,7 @@ def cmd_setup(args: list[str]) -> None:
 def cmd_stats(args: list[str]) -> None:
     from mindvault.config import DB_PATH, QDRANT_PATH, SESSIONS_DIR
     from src.ingestion.store import BrainStore
-    from src.sessions.manager import list_sessions
+    from mindvault.sessions.manager import list_sessions
 
     store = BrainStore(db_path=DB_PATH, qdrant_path=QDRANT_PATH)
     s = store.stats()
@@ -171,7 +171,7 @@ def cmd_stats(args: list[str]) -> None:
 
 def cmd_sessions(args: list[str]) -> None:
     from mindvault.config import SESSIONS_DIR
-    from src.sessions.manager import list_sessions
+    from mindvault.sessions.manager import list_sessions
 
     sessions = list_sessions(SESSIONS_DIR) if SESSIONS_DIR.exists() else []
     if not sessions:
@@ -192,20 +192,34 @@ def cmd_sessions(args: list[str]) -> None:
 
 def cmd_web(args: list[str]) -> None:
     port = 7432
+    host = "127.0.0.1"
     for a in args:
         if a.startswith("--port="):
             port = int(a.split("=")[1])
+        elif a.startswith("--host="):
+            host = a.split("=", 1)[1]
         elif a.lstrip("-").isdigit():
             port = int(a.lstrip("-"))
 
     try:
         import uvicorn
     except ImportError:
-        print("uvicorn not installed: pip install uvicorn fastapi")
+        print("Web UI dependencies are missing in the current virtualenv.")
+        print("Run: ./.venv/bin/python -m pip install -e .")
         sys.exit(1)
 
-    print(f"\n  MindVault Web UI → http://localhost:{port}\n  Press Ctrl+C to stop.\n")
-    uvicorn.run("web.server:app", host="127.0.0.1", port=port, reload=False)
+    try:
+        from web.server import app
+    except ModuleNotFoundError as exc:
+        if exc.name in {"fastapi", "pydantic"}:
+            print("Web UI dependencies are missing in the current virtualenv.")
+            print("Run: ./.venv/bin/python -m pip install -e .")
+            sys.exit(1)
+        raise
+
+    public_host = "localhost" if host == "127.0.0.1" else host
+    print(f"\n  MindVault Web UI → http://{public_host}:{port}\n  Press Ctrl+C to stop.\n")
+    uvicorn.run(app, host=host, port=port, reload=False)
 
 
 def cmd_consolidate(args: list[str]) -> None:
