@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mindvault"
-version = "0.5.460"
+version = "0.5.461"
 description = "Local-first second brain RAG system — chat with your own data"
 readme = "README.md"
 requires-python = ">=3.11"
